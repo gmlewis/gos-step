@@ -84,9 +84,15 @@ independent reference validator:
 ```bash
 ./run-example.sh 01 --edge 10 > cube.step
 ./run-example.sh 38 --numTeeth 12 > gearbox.step
+./run-example.sh 01 -o cube.step -stl          # also write cube.stl via OCCT
 ./scripts/check-examples.sh          # one canonical variant per example
 STEP_NATIVE=0 ./run-example.sh 01 --edge 10   # VM tier instead of native
 ```
+
+Add `-stl` to tessellate the generated STEP file into an STL using
+OpenCASCADE (needs `occt-draw` or `DRAWEXE` on `PATH`). Use `-stl=<path>` to
+name the STL, and `STL_DEFLECTION=<mm>` to set the tessellation tolerance
+(default `0.05`).
 
 Examples run on the **native tier by default**. The first run compiles the
 library with LLVM (minutes); later runs reuse the build. `STEP_NATIVE=0`

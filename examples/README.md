@@ -13,6 +13,18 @@ per-example manifest is needed. Run them from the repository root:
 STEP_NATIVE=0 ./run-example.sh 01 --edge 10   # VM tier (native is default)
 ```
 
+Add `-o file.step` to write the STEP file instead of stdout, and add `-stl` to
+also tessellate the generated STEP file into an STL using OpenCASCADE:
+
+```bash
+./run-example.sh 01 -o cube.step -stl        # writes cube.step and cube.stl
+./run-example.sh 01 -stl=my-cube.stl         # names the STL explicitly
+./run-example.sh 38 --numTeeth 12 -stl       # writes 38-planetary-gearbox.stl
+```
+
+`STL_DEFLECTION=<mm>` sets the tessellation tolerance (default `0.05`). The
+`-stl` option needs either `occt-draw` or `DRAWEXE` on `PATH`.
+
 The native tier is the default; the first run compiles the library with LLVM
 and later runs reuse the build. The VM starts instantly but is much slower on
 large designs.
