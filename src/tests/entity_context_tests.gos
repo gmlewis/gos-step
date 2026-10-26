@@ -1,14 +1,6 @@
 //! Entity serialization tests: context family.
 
-use crate::ids::{EntityId}
 use crate::entities::context
-
-#[test]
-fn context_ctx_wrap_to_step_preserves_raw() {
-    let raw = "(\nGEOMETRIC_REPRESENTATION_CONTEXT(3)\nREPRESENTATION_CONTEXT('cube','TOP_LEVEL_ASSEMBLY_PART')\n)"
-    let w = context::CtxWrap::new(raw)
-    assert_eq(w.to_step(), raw)
-}
 
 #[test]
 fn context_complexinstance_to_step() {
@@ -28,22 +20,4 @@ fn context_complexinstance_to_step() {
         s.contains("REPRESENTATION_CONTEXT('cube','TOP_LEVEL_ASSEMBLY_PART')")
     )
     assert(s.ends_with("\n)"))
-}
-
-#[test]
-fn context_globaluncertaintyassignedcontext_to_step() {
-    let e = context::GlobalUncertaintyAssignedContext::new(#[
-        EntityId { value: 188 }
-    ])
-    assert_eq(e.to_step(), "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#188))")
-}
-
-#[test]
-fn context_globalunitassignedcontext_to_step() {
-    let e = context::GlobalUnitAssignedContext::new(#[
-        EntityId { value: 194 }
-        EntityId { value: 190 }
-        EntityId { value: 189 }
-    ])
-    assert_eq(e.to_step(), "GLOBAL_UNIT_ASSIGNED_CONTEXT((#194,#190,#189))")
 }

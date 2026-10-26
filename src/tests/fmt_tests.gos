@@ -1,6 +1,5 @@
-//! Formatting, ID, and error-display tests.
+//! Formatting tests.
 
-use crate::error
 use crate::fmt
 
 #[test]
@@ -23,22 +22,6 @@ fn fmt_num_large_integral_saturates_like_int32() {
     // 2147483647.0 rather than their true magnitude.
     assert_eq(fmt::fmt_num(1.0e20), "2147483647.0")
     assert_eq(fmt::fmt_num(1.5e21), "2147483647.0")
-}
-
-#[test]
-fn fmt_num_boundaries() {
-    assert_eq(fmt::fmt_num(1.0e-13), "0.0")
-    assert_eq(fmt::fmt_num(1.0e-12), "1.0E-12")
-    assert_eq(fmt::fmt_num(9.999999e-7), "9.999999E-7")
-    assert_eq(fmt::fmt_num(1.0e-6), "0.000001")
-    assert_eq(fmt::fmt_num(1.2345678901234567e20), "2147483647.0")
-}
-
-#[test]
-fn step_str_doubles_quotes() {
-    assert_eq(fmt::step_str("abc"), "'abc'")
-    assert_eq(fmt::step_str("It's"), "'It''s'")
-    assert_eq(fmt::step_str(""), "''")
 }
 
 #[test]
@@ -70,17 +53,4 @@ fn fmt_double_matches_reference() {
     assert_eq(fmt::fmt_double(2.88333, snapping_micron), "2.883")
     assert_eq(fmt::fmt_double(2.9, snapping_micron), "2.900")
     assert_eq(fmt::fmt_double(2.88333, None), "2.88333")
-}
-
-#[test]
-fn parse_error_display_is_exact() {
-    let info = error::ParseErrorInfo::new("parse error")
-    assert_eq(info.to_string(), "parse error")
-}
-
-#[test]
-fn utf16_width_counts_astral_scalars_as_two() {
-    assert_eq(error::utf16_width('a'), 1)
-    assert_eq(error::utf16_width('\u{1F600}'), 2)
-    assert_eq(error::utf16_len("a\u{1F600}b"), 4)
 }

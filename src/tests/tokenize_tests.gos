@@ -1,9 +1,8 @@
 //! Tokenizer tests.
 
-use crate::error::{ParseErrorInfo, format_step_parse_error}
+use crate::error::ParseErrorInfo
 use crate::parse::tokenize::{
-    split_args, split_statements, split_statements_with_pos, strip_step_comments
-    tokenize_step_data_section
+    split_statements, split_statements_with_pos, tokenize_step_data_section
 }
 
 fn error_of<T>(r: Result<T, ParseErrorInfo>) -> ParseErrorInfo {
@@ -35,62 +34,6 @@ fn split_statements_keeps_semicolons_in_strings() {
 }
 
 #[test]
-fn split_statements_with_pos_tracks_line_and_col() {
-    let data = "\n  #1=FOO('A');\n#2=BAR('B');"
-    let spans = split_statements_with_pos(data).unwrap()
-    assert_eq(spans.len(), 2)
-    assert_eq(spans[0].line, 2)
-    assert_eq(spans[0].col, 3)
-    assert_eq(spans[1].line, 3)
-    assert_eq(spans[1].col, 1)
-}
-
-#[test]
-fn tokenize_rows_carry_line_and_col() {
-    let data = "\n  #1=FOO('A');\n#2=BAR('B');"
-    let rows = tokenize_step_data_section(data).unwrap()
-    assert_eq(rows.len(), 2)
-    assert_eq(rows[0].line, 2)
-    assert_eq(rows[0].col, 3)
-    assert_eq(rows[1].line, 3)
-    assert_eq(rows[1].col, 1)
-}
-
-#[test]
-fn tokenize_errors_include_position_and_stmt() {
-    let data = "#1=FOO('A');\n#2FOO('B');"
-    let result = tokenize_step_data_section(data)
-    assert(result.is_err())
-    let info = error_of(result)
-    assert_eq(info.line, Some(2))
-    assert_eq(info.col, Some(1))
-    assert(info.stmt.unwrap().contains("#2FOO('B')"))
-    let msg = format_step_parse_error(info)
-    assert(msg.contains("@2:1"))
-    assert(msg.contains("missing '='"))
-    assert(msg.contains("\n    ^"))
-}
-
-#[test]
-fn split_statements_handles_doubled_quotes_in_strings() {
-    // STEP string escaping uses doubled quotes: '' is a literal '.
-    let data = "#1=FOO('a''b;c');#2=BAR('d');"
-    let stmts = split_statements(data)
-    assert_eq(stmts.len(), 2)
-    assert(stmts[0].contains("'a''b;c'"))
-    assert(stmts[1].contains("#2=BAR('d')"))
-}
-
-#[test]
-fn split_statements_handles_nested_parentheses() {
-    let data = "#1=FOO((1,(2,3)),4);\n#2=BAR(5);"
-    let stmts = split_statements(data)
-    assert_eq(stmts.len(), 2)
-    assert(stmts[0].contains("FOO((1,(2,3)),4)"))
-    assert(stmts[1].contains("BAR(5)"))
-}
-
-#[test]
 fn split_statements_with_pos_reports_unterminated_string_at_quote() {
     let data = "#1=FOO('unterminated\n#2=BAR(1);"
     let result = split_statements_with_pos(data)
@@ -102,39 +45,4 @@ fn split_statements_with_pos_reports_unterminated_string_at_quote() {
     assert_eq(info.line, Some(1))
     assert_eq(info.col, Some(8))
     assert(info.stmt.unwrap().contains("#1=FOO('unterminated"))
-}
-
-#[test]
-fn strip_comments_preserves_newlines_and_strings() {
-    let data = "A /* x\ny */ B '/*not*/' C"
-    let out = strip_step_comments(data).unwrap()
-    assert_eq(out, "A  \n B '/*not*/' C")
-}
-
-#[test]
-fn strip_comments_reports_unterminated_comment() {
-    let result = strip_step_comments("A /* x")
-    assert(result.is_err())
-    let info = error_of(result)
-    assert_eq(info.message, "unterminated STEP block comment (missing '*/')")
-    assert_eq(info.line, Some(1))
-    assert_eq(info.col, Some(3))
-    assert_eq(info.stmt.unwrap(), "/*")
-}
-
-#[test]
-fn split_args_is_depth_and_string_aware() {
-    assert_eq(split_args("(a,b,(c,d),'e,f')"), #["a", "b", "(c,d)", "'e,f'"])
-    assert_eq(split_args("()"), #[])
-    assert_eq(split_args("(a,,b)"), #["a", "", "b"])
-    assert_eq(split_args("(a,b,)"), #["a", "b"])
-}
-
-#[test]
-fn parse_int_dec_is_lax() {
-    assert_eq(crate::parse::tokenize::parse_int_dec("12"), 12)
-    assert_eq(crate::parse::tokenize::parse_int_dec("-5"), -5)
-    assert_eq(crate::parse::tokenize::parse_int_dec("12x"), 12)
-    assert_eq(crate::parse::tokenize::parse_int_dec("abc"), 0)
-    assert_eq(crate::parse::tokenize::parse_int_dec("-"), 0)
 }

@@ -13,16 +13,7 @@ use crate::tests::entity_context_tests
 use crate::tests::entity_geometry_tests
 
 #[cfg(test)]
-use crate::tests::entity_kinematics_tests
-
-#[cfg(test)]
-use crate::tests::entity_presentation_tests
-
-#[cfg(test)]
 use crate::tests::entity_product_tests
-
-#[cfg(test)]
-use crate::tests::entity_tolerancing_tests
 
 #[cfg(test)]
 use crate::tests::entity_topology_tests

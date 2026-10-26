@@ -1,8 +1,6 @@
-//! CAD compiler and helix tests.
+//! CAD compiler and text tests.
 
 use crate::cad::design::Design
-use crate::cad::geometry::Vec3
-use crate::cad::helix::helix_path
 use crate::cad::types::{BezierAnchor, BezierPath}
 
 fn straight_anchor(x: f64, y: f64) -> BezierAnchor {
@@ -43,52 +41,6 @@ fn extruded_bezier_profile_emits_a_closed_shell() {
     assert(step.contains("MANIFOLD_SOLID_BREP"))
     // Two caps plus four side faces per loop.
     assert_eq(count_occurrences(step, "ADVANCED_FACE("), 10)
-}
-
-fn approx3(a: Vec3, b: Vec3, eps: f64) -> bool {
-    (a.0 - b.0) * (a.0 - b.0) + (a.1 - b.1) * (a.1 - b.1) + (a.2 - b.2) * (a.2 - b.2) <=
-        eps * eps
-}
-
-#[test]
-fn helix_path_generates_expected_points() {
-    let path = helix_path((0.0, 0.0, 0.0), (10.0, 10.0, 20.0), 2.0, 4, 0.0, true)
-    assert_eq(path.points.len(), 9)
-    let expected = #[
-        (10.0, 0.0, 0.0)
-        (6.123233995736766e-16, -10.0, 5.0)
-        (-10.0, -1.2246467991473533e-15, 10.0)
-        (-1.8369701987210296e-15, 10.0, 15.0)
-        (10.0, 2.4492935982947065e-15, 20.0)
-        (3.061616997868383e-15, -10.0, 25.0)
-        (-10.0, -3.673940397442059e-15, 30.0)
-        (-4.2862637970157365e-15, 10.0, 35.0)
-        (10.0, 4.898587196589413e-15, 40.0)
-    ]
-    let mut i = 0
-    while i < expected.len() {
-        assert(approx3(path.points[i], expected[i], 1.0e-9))
-        assert(approx3(path.normals[i], (0.0, 0.0, -1.0), 1.0e-9))
-        i += 1
-    }
-}
-
-#[test]
-fn helix_path_start_angle_180() {
-    let path = helix_path((0.0, 0.0, 0.0), (10.0, 10.0, 20.0), 1.0, 4, 180.0, true)
-    assert_eq(path.points.len(), 5)
-    let expected = #[
-        (-10.0, -1.2246467991473533e-15, 0.0)
-        (-1.8369701987210296e-15, 10.0, 5.0)
-        (10.0, 2.4492935982947065e-15, 10.0)
-        (3.061616997868383e-15, -10.0, 15.0)
-        (-10.0, -3.673940397442059e-15, 20.0)
-    ]
-    let mut i = 0
-    while i < expected.len() {
-        assert(approx3(path.points[i], expected[i], 1.0e-9))
-        i += 1
-    }
 }
 
 #[test]

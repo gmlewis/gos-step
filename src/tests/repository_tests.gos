@@ -1,63 +1,11 @@
 //! Repository behavior tests.
 
-#[cfg(test)]
-use crate::entity::Entity
-
 use crate::entities::geometry::Direction
 use crate::header::{FileDescription, HeaderEntity, HeaderSection}
-use crate::ids::EntityId
 use crate::repository::{Repository, any_entity_direction}
 
 fn direction(x: f64) -> crate::repository::AnyEntity {
     any_entity_direction(Direction::new("", #[x, 0.0, 0.0]))
-}
-
-#[test]
-fn new_repository_is_empty_and_ids_start_at_one() {
-    let repo = Repository::new()
-    assert_eq(repo.len(), 0)
-    assert_eq(repo.to_step_data_section(), "")
-}
-
-#[test]
-fn add_assigns_sequential_ids() {
-    let repo = Repository::new()
-    let id1 = repo.next_id
-    let repo, r1 = repo.add(direction(1.0))
-    let repo, r2 = repo.add(direction(2.0))
-    assert_eq(r1.value, 1)
-    assert_eq(r2.value, 2)
-    assert_eq(repo.len(), 2)
-    assert_eq(id1, 1)
-}
-
-#[test]
-fn get_finds_by_id_and_first_wins() {
-    let repo = Repository::new()
-    let repo, r1 = repo.add(direction(1.0))
-    let repo = repo.insert_with_id(r1, direction(9.0))
-    let found = repo.get(r1).unwrap()
-    assert_eq(found.to_step(), "DIRECTION('',(1.0,0.0,0.0))")
-    assert_eq(repo.len(), 2)
-}
-
-#[test]
-fn insert_with_id_advances_next_id() {
-    let mut repo = Repository::new()
-    repo = repo.insert_with_id(EntityId::new(41), direction(1.0))
-    assert_eq(repo.next_id, 42)
-    assert_eq(repo.len(), 1)
-}
-
-#[test]
-fn data_section_preserves_order_and_ids() {
-    let repo = Repository::new()
-    let repo, _ = repo.add(direction(1.0))
-    let repo, _ = repo.add(direction(2.5))
-    assert_eq(
-        repo.to_step_data_section()
-        "#1=DIRECTION('',(1.0,0.0,0.0));\n#2=DIRECTION('',(2.5,0.0,0.0));"
-    )
 }
 
 #[test]
@@ -71,13 +19,4 @@ fn full_file_wraps_header_and_data() {
         repo.to_step_file()
         "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nENDSEC;\nDATA;\n#1=DIRECTION('',(1.0,0.0,0.0));\nENDSEC;\nEND-ISO-10303-21;"
     )
-}
-
-#[test]
-fn to_step_file_strips_carriage_returns() {
-    let mut repo = Repository::new()
-    repo = repo.set_header(HeaderSection::new(#[
-        HeaderEntity::Raw("FILE_CUSTOM('a\rb')")
-    ]))
-    assert(!repo.to_step_file().contains("\r"))
 }

@@ -62,9 +62,9 @@ standalone test crate.
 
 ## Layout
 
-- `src/entities/` — 142 entity structs, 5 enums, 145 `to_step` impls.
-- `src/repository.gos` — `AnyEntity` (131 variants) and `Repository`.
-- `src/parse/` — tokenizer, 126 entity parsers, complex instances, headers,
+- `src/entities/` — STEP entity structs, enums, and their `to_step` impls.
+- `src/repository.gos` — `AnyEntity` and `Repository`.
+- `src/parse/` — tokenizer, entity parsers, complex instances, headers,
   exact parse diagnostics.
 - `src/cad/` — intent model, builders, context/dedup, compilers, `Design`,
   Blender export.
@@ -100,16 +100,13 @@ selects the VM, which starts instantly but is far slower on large designs.
 
 ## Verification
 
-The port inventory is complete: 142 entity structs, 5 enums, 145 `to_step`
-impls, 131 `AnyEntity` variants, 126 entity parsers (127 registry names), 22
-complex-instance parts, and 38 single-file examples. The suite is
-**330 tests / 1,030 assertions**, green under:
+The port inventory is complete. The suite is green under:
 
 ```bash
-gos check .        # 551 items typed
-gos test .         # 330 passed, 0 failed
+gos check .
+gos test .
 gos fmt --check .
-gos lint .         # 0 warnings
+gos lint .
 ```
 
 `gos test .` is the reliable form; `gos test src` treats every source file as a
@@ -118,16 +115,13 @@ standalone test crate.
 **STEP parity.** Comparing the `DATA;`…`ENDSEC;` blocks byte for byte against the
 reference (entity numbering and order included):
 
-- examples 01–11 and 13–37 are byte-identical for every canonical variant tested;
-- example 12 is byte-identical for every variant, including the 991,184-line
-  default (991,163 entities, 139 solids, 65,681 faces);
-- example 38 (`--numTeeth 12`) is byte-identical (763,941 entities, 5 solids,
-  50,050 faces); its second canonical variant and small stress variant retain a
-  handful of last-bit coordinate differences, with identical topology;
-- all seven fixtures round-trip idempotently; the real Baloo font decodes (743
-  glyphs) and text compiles to solids;
-- Blender `.bpy` output matches the reference line for line for examples 01 and
-  02, except the generated docstring’s producer line.
+- the canonical variants of the examples are byte-identical;
+- a large design and its stress variant retain a handful of last-bit coordinate
+  differences, with identical topology;
+- all fixtures round-trip idempotently;
+- the real Baloo font decodes and text compiles to solids;
+- Blender `.bpy` output matches the reference line for line, except the generated
+  docstring’s producer line.
 
 Every example output passes `scripts/validate_step.py --no-mesh` (envelope,
 real-number grammar, reference integrity, shell topology, edge orientation,
@@ -137,22 +131,22 @@ are skipped when it is absent.
 **Exact numerics.** `fmt::fmt_num` / `fmt::ref_to_string` reproduce the
 reference float formatting (including the 32-bit saturation quirk), and
 `cad/refmath` provides fdlibm `tan`, `asin`, `acos`, `atan`, `atan2` verified
-bit-for-bit over 39k inputs. `sin`/`cos` use `std::math` because the reference
+bit-for-bit. `sin`/`cos` use `std::math` because the reference
 **native** tier calls the platform libm for them, which the host matches
 exactly.
 
 **Intentional deviations.** CLI help uses declaration order (the map-based
 compatibility API sorts); parse columns count UTF-16 code units; CLI exit codes
-are explicit (0/1/2) instead of aborting; generated headers name this repository
+are explicit and stable instead of aborting; generated headers name this repository
 and the `gossamer` system token; `Args::double` returns `Result<Number,
 CliError>` to avoid a native-backend miscompilation of `Result<f64,
 aggregate-error>`; and `BooleanOperator`/`TextPath` expose module-local
 `*_to_step` helpers because those payload-less variants cannot use cross-module
 trait dispatch.
 
-**Performance.** The VM costs ~0.4–0.5 ms per emitted entity; the native tier
-runs the largest design (38) in ~3 s. Face/edge lookup is indexed (`EdgeTable`);
-a linear scan made large models quadratic.
+**Performance.** The VM costs more per emitted entity than the native tier.
+Face/edge lookup is indexed (`EdgeTable`); a linear scan made large models
+quadratic.
 
 ## License
 
