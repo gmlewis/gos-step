@@ -1,10 +1,11 @@
 #!/bin/bash
 # Run one canonical variant of every example and validate the STEP output.
 #
-#   ./scripts/check-examples.sh            # VM tier
-#   STEP_NATIVE=1 ./scripts/check-examples.sh
+#   ./scripts/check-examples.sh            # native tier (default)
+#   STEP_NATIVE=0 ./scripts/check-examples.sh   # VM tier
 #
-# Large designs (12, 38) are far faster with STEP_NATIVE=1.
+# The native tier is far faster for large designs (12, 38), but the first run
+# of each example compiles.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"

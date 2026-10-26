@@ -3,6 +3,8 @@
 #
 #   ./run-example.sh NN [args...]      # numeric, zero-padded
 #   ./run-example.sh 03-engraved-name-tag [args...]
+#
+# The native tier is the default (STEP_NATIVE=0 selects the VM).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 
@@ -35,9 +37,9 @@ if [ -z "$EXAMPLE" ] || [ ! -f "$ROOT/examples/$EXAMPLE/main.gos" ]; then
 fi
 
 cd "$ROOT"
-# The VM tier is fast to start; huge designs run much faster natively.
-if [ "${STEP_NATIVE:-0}" = "1" ]; then
-  STEP_ROOT="$ROOT" gos run --native "examples/$EXAMPLE/main.gos" "$@"
-else
+# Native is the default tier. Set STEP_NATIVE=0 to run on the VM instead.
+if [ "${STEP_NATIVE:-1}" = "0" ]; then
   STEP_ROOT="$ROOT" gos run "examples/$EXAMPLE/main.gos" "$@"
+else
+  STEP_ROOT="$ROOT" gos run --native "examples/$EXAMPLE/main.gos" "$@"
 fi

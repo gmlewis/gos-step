@@ -1,34 +1,37 @@
 # Examples
 
-Each directory is its own Gossamer package with a path dependency on the
-library:
-
-Examples are single `main.gos` files and are run from the repository root;
-no per-example manifest is needed because the root project supplies `use step`.
+All 38 reference examples are ported to single-file
+`examples/NN-name/main.gos` programs. Examples share one manifest
+(`examples/project.toml`) with a path dependency on the library, so no
+per-example manifest is needed. Run them from the repository root:
 
 ```bash
-gos run examples/01-hello-cube/main.gos --edge 10 > cube.step
 ./run-example.sh 01 --edge 10 > cube.step
 ./run-example.sh 04 --id 5 --od 15 --thickness 2 > washer.step
+./run-example.sh 38 --numTeeth 12 > gearbox.step
+
+STEP_NATIVE=0 ./run-example.sh 01 --edge 10   # VM tier (native is default)
 ```
 
-## Implemented end-to-end (CLI + STEP + optional Blender export)
+The native tier is the default; the first run compiles the library with LLVM
+and later runs reuse the build. The VM starts instantly but is much slower on
+large designs.
 
-| # | Example | Verified |
-|---|---|---|
-| 01 | hello-cube | STEP DATA byte-identical to the reference; `.bpy` byte-identical |
-| 02 | calibration-chamfer-block | STEP DATA byte-identical; `.bpy` byte-identical |
-| 04 | parametric-washer-kit | STEP DATA byte-identical |
-| 10 | polygon-knob | STEP DATA byte-identical |
-| 17 | living-hinge-sample | STEP DATA byte-identical |
-| 37 | tube-cap-assortment | STEP DATA byte-identical |
+## Verification
 
-All six also pass `scripts/validate_step.py --no-mesh` (syntax, references,
-shell topology, edge orientation, plane planarity).
+Every example is exercised with its canonical arguments and checked against
+the reference:
 
-## Scaffolded
+- 37 examples produce **byte-identical STEP `DATA`** for every canonical
+  variant tested, including example 12’s 991,184-line default.
+- Example 38’s first variant is byte-identical; its second variant and small
+  stress variant retain a handful of last-bit coordinate differences with
+  identical topology.
+- Every output passes `scripts/validate_step.py --no-mesh` (syntax, references,
+  shell topology, edge orientation, plane planarity).
+- Examples 01 and 02 also produce `.bpy` output matching the reference line for
+  line (except the generated docstring’s producer line).
 
-The remaining reference examples have package directories only; their
-`main.gos` is not yet ported. The library surface they
-need (cuboid, chamfer, extrusion, Bezier extrusion, sweep, helix, text,
-booleans, Blender export, CLI) is implemented and tested.
+```bash
+./scripts/check-examples.sh          # canonical variant of every example
+```
