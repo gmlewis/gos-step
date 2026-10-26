@@ -1,0 +1,168 @@
+//! The Bezier-profile compiler: flattens cubic spans, groups outer loops and
+//! holes, then delegates to the extruded-profile compiler.
+
+use crate::cad::compiler_extrusion::compile_extruded_profile
+use crate::cad::context::StepContext
+use crate::cad::geometry::{
+    Vec2, force_ccw, force_cw, is_point_in_polygon
+}
+use crate::cad::types::{BezierPath, ExtrudedBezierProfile, ExtrudedProfile, Profile2D, SceneNode}
+use crate::ids::Ref
+
+/// Segments used to approximate each cubic span when flattening for STEP.
+const BEZIER_SEGMENTS_PER_SPAN: i64 = 8
+
+fn cubic_bezier_point(p0: Vec2, c1: Vec2, c2: Vec2, p3: Vec2, t: f64) -> Vec2 {
+    let u = 1.0 - t
+    let uu = u * u
+    let tt = t * t
+    let uuu = uu * u
+    let ttt = tt * t
+    let ut3 = 3.0 * uu * t
+    let tu3 = 3.0 * u * tt
+    (
+        uuu * p0.0 + ut3 * c1.0 + tu3 * c2.0 + ttt * p3.0
+        uuu * p0.1 + ut3 * c1.1 + tu3 * c2.1 + ttt * p3.1
+    )
+}
+
+/// Sample a path into a polyline. Handles are absolute positions; straight
+/// spans contribute only their start point. Closed paths include the wrap span.
+pub fn flatten_bezier_path(path: BezierPath) -> Vec<Vec2> {
+    let anchors = path.anchors
+    let n = anchors.len()
+    if n < 2 {
+        return #[]
+    }
+    let mut points: Vec<Vec2> = #[]
+    let span_count = if path.closed { n } else { n - 1 }
+    let mut i = 0
+    while i < span_count {
+        let a0 = anchors[i]
+        let a1 = anchors[(i + 1) % n]
+        let p0 = a0.position
+        let p3 = a1.position
+        let c1 = a0.handle_out
+        let c2 = a1.handle_in
+        let straight = c1 == p0 && c2 == p3
+        if straight {
+            points.push(p0)
+        } else {
+            let mut j = 0
+            while j < BEZIER_SEGMENTS_PER_SPAN {
+                let t = j as f64 / BEZIER_SEGMENTS_PER_SPAN as f64
+                points.push(cubic_bezier_point(p0, c1, c2, p3, t))
+                j += 1
+            }
+        }
+        i += 1
+    }
+    if !path.closed {
+        points.push(anchors[n - 1].position)
+    }
+    dedupe_bezier_points(points)
+}
+
+/// Drop consecutive duplicates and a duplicated closing point.
+fn dedupe_bezier_points(points: Vec<Vec2>) -> Vec<Vec2> {
+    let eps_sq = 1.0e-18
+    let mut result: Vec<Vec2> = #[]
+    for pt in points {
+        let duplicate = match result.last() {
+            Some(prev) => {
+                let dx = pt.0 - prev.0
+                let dy = pt.1 - prev.1
+                dx * dx + dy * dy <= eps_sq
+            }
+            None => false
+        }
+        if !duplicate {
+            result.push(pt)
+        }
+    }
+    if result.len() > 1 {
+        let first = result[0]
+        let last = result[result.len() - 1]
+        let dx = first.0 - last.0
+        let dy = first.1 - last.1
+        if dx * dx + dy * dy <= eps_sq {
+            let _ = result.pop()
+        }
+    }
+    result
+}
+
+/// Split paths into (outer, holes) groups, keeping the curves. Holes are
+/// attached to every outer loop that contains them.
+pub fn bezier_path_groups(paths: Vec<BezierPath>) -> Vec<Vec<BezierPath>> {
+    let mut outers: Vec<(BezierPath, Vec<Vec2>)> = #[]
+    let mut holes: Vec<(BezierPath, Vec<Vec2>)> = #[]
+    for path in paths {
+        let flat = flatten_bezier_path(path)
+        if flat.len() < 3 {
+            continue
+        }
+        if path.clear {
+            holes.push((path, flat))
+        } else {
+            outers.push((path, flat))
+        }
+    }
+    let mut groups: Vec<Vec<BezierPath>> = #[]
+    for outer_pair in outers {
+        let outer = outer_pair.0
+        let outer_poly = outer_pair.1
+        let mut group = #[outer]
+        for hole_pair in holes {
+            let hole = hole_pair.0
+            let hole_poly = hole_pair.1
+            if hole_poly.len() > 0 && is_point_in_polygon(hole_poly[0], outer_poly) {
+                group.push(hole)
+            }
+        }
+        groups.push(group)
+    }
+    groups
+}
+
+/// Group flattened paths into `Profile2D` values with normalized winding.
+pub fn bezier_profiles(paths: Vec<BezierPath>) -> Vec<Profile2D> {
+    let mut out = #[]
+    for group in bezier_path_groups(paths) {
+        let outer = force_ccw(flatten_bezier_path(group[0]))
+        let mut holes = #[]
+        let mut i = 1
+        while i < group.len() {
+            holes.push(force_cw(flatten_bezier_path(group[i])))
+            i += 1
+        }
+        out.push(Profile2D { outer: outer, holes: holes })
+    }
+    out
+}
+
+/// Compile a Bezier extrusion by flattening and delegating per group.
+pub fn compile_extruded_bezier_profile(
+    ctx: &mut StepContext
+    node: SceneNode
+    extrusion: ExtrudedBezierProfile
+    reverse: bool = false
+) -> Vec<Ref> {
+    if extrusion.height_mm == 0.0 {
+        return #[]
+    }
+    let mut faces = #[]
+    for profile in bezier_profiles(extrusion.paths) {
+        if profile.outer.len() < 3 {
+            continue
+        }
+        let ext = ExtrudedProfile {
+            profile: profile
+            height_mm: extrusion.height_mm
+        }
+        for face in compile_extruded_profile(ctx, node, ext, reverse) {
+            faces.push(face)
+        }
+    }
+    faces
+}

@@ -1,0 +1,804 @@
+//! Entry points: entity dispatch, complex instances, headers, and repository
+//! construction from STEP text.
+
+use std::fs
+
+use crate::repository::{AnyEntity, Repository, any_entity_complex_instance, any_entity_raw_entity}
+use crate::raw_entity::RawEntity
+use crate::header::{FileDescription, FileName, FileSchema, HeaderEntity, HeaderSection}
+use crate::header::{StringListOrDollar, StringOrDollar}
+use crate::entities::context::{ComplexInstance, ComplexPart}
+use crate::error::{ParseErrorInfo, fail_parse, fail_parse_at, fail_parse_msg}
+use crate::parse::parsers::{parse_b_spline_surface, parse_b_spline_surface_with_knots, parse_literal_list, parse_rational_b_spline_surface, parse_ref_ids, parse_ref_int, parse_step_string_literal_unescaped, strip_outer_parens, strip_quotes}
+use crate::parse::tokenize::{parse_int_dec, split_args, split_statements, strip_step_comments}
+use crate::parse::tokenize::tokenize_step_data_section_with_base
+
+/// Look up an entity parser by STEP entity name.
+///
+/// Returns `None` when the name is unknown (the caller preserves it as a raw
+/// entity), and `Some(Err(..))` when a known parser rejects its arguments.
+pub fn parse_entity(name: String, args: String) -> Option<Result<AnyEntity, ParseErrorInfo>> {
+    match name {
+
+        "CARTESIAN_POINT" => Some(crate::parse::parsers::parse_cartesian_point(args).map(|v| crate::repository::any_entity_cartesian_point(v)))
+        "DIRECTION" => Some(crate::parse::parsers::parse_direction(args).map(|v| crate::repository::any_entity_direction(v)))
+        "AXIS1_PLACEMENT" => Some(crate::parse::parsers::parse_axis1_placement(args).map(|v| crate::repository::any_entity_axis1_placement(v)))
+        "AXIS2_PLACEMENT_2D" => Some(crate::parse::parsers::parse_axis2_placement_2d(args).map(|v| crate::repository::any_entity_axis2_placement_2d(v)))
+        "AXIS2_PLACEMENT_3D" => Some(crate::parse::parsers::parse_axis2_placement_3d(args).map(|v| crate::repository::any_entity_axis2_placement_3d(v)))
+        "PLANE" => Some(crate::parse::parsers::parse_plane(args).map(|v| crate::repository::any_entity_plane(v)))
+        "CIRCLE" => Some(crate::parse::parsers::parse_circle(args).map(|v| crate::repository::any_entity_circle(v)))
+        "ELLIPSE" => Some(crate::parse::parsers::parse_ellipse(args).map(|v| crate::repository::any_entity_ellipse(v)))
+        "PARABOLA" => Some(crate::parse::parsers::parse_parabola(args).map(|v| crate::repository::any_entity_parabola(v)))
+        "HYPERBOLA" => Some(crate::parse::parsers::parse_hyperbola(args).map(|v| crate::repository::any_entity_hyperbola(v)))
+        "CYL_SURF" | "CYLINDRICAL_SURFACE" => Some(crate::parse::parsers::parse_cylindrical_surface(args).map(|v| crate::repository::any_entity_cylindrical_surface(v)))
+        "CONICAL_SURFACE" => Some(crate::parse::parsers::parse_conical_surface(args).map(|v| crate::repository::any_entity_conical_surface(v)))
+        "TOROIDAL_SURFACE" => Some(crate::parse::parsers::parse_toroidal_surface(args).map(|v| crate::repository::any_entity_toroidal_surface(v)))
+        "B_SPLINE_CURVE" => Some(crate::parse::parsers::parse_b_spline_curve(args).map(|v| crate::repository::any_entity_b_spline_curve(v)))
+        "B_SPLINE_CURVE_WITH_KNOTS" => Some(crate::parse::parsers::parse_b_spline_curve_with_knots(args).map(|v| crate::repository::any_entity_b_spline_curve_with_knots(v)))
+        "COMPOSITE_CURVE" => Some(crate::parse::parsers::parse_composite_curve(args).map(|v| crate::repository::any_entity_composite_curve(v)))
+        "COMPOSITE_CURVE_SEGMENT" => Some(crate::parse::parsers::parse_composite_curve_segment(args).map(|v| crate::repository::any_entity_composite_curve_segment(v)))
+        "B_SPLINE_SURFACE" => Some(crate::parse::parsers::parse_b_spline_surface(args).map(|v| crate::repository::any_entity_b_spline_surface(v)))
+        "B_SPLINE_SURFACE_WITH_KNOTS" => Some(crate::parse::parsers::parse_b_spline_surface_with_knots(args).map(|v| crate::repository::any_entity_b_spline_surface_with_knots(v)))
+        "RATIONAL_B_SPLINE_CURVE" => Some(crate::parse::parsers::parse_rational_b_spline_curve(args).map(|v| crate::repository::any_entity_rational_b_spline_curve(v)))
+        "RATIONAL_B_SPLINE_SURFACE" => Some(crate::parse::parsers::parse_rational_b_spline_surface(args).map(|v| crate::repository::any_entity_rational_b_spline_surface(v)))
+        "TRIMMED_CURVE" => Some(crate::parse::parsers::parse_trimmed_curve(args).map(|v| crate::repository::any_entity_trimmed_curve(v)))
+        "OFFSET_CURVE_3D" => Some(crate::parse::parsers::parse_offset_curve_3d(args).map(|v| crate::repository::any_entity_offset_curve_3d(v)))
+        "OFFSET_SURFACE" => Some(crate::parse::parsers::parse_offset_surface(args).map(|v| crate::repository::any_entity_offset_surface(v)))
+        "SURFACE_OF_LINEAR_EXTRUSION" => Some(crate::parse::parsers::parse_surface_of_linear_extrusion(args).map(|v| crate::repository::any_entity_surface_of_linear_extrusion(v)))
+        "SURFACE_OF_REVOLUTION" => Some(crate::parse::parsers::parse_surface_of_revolution(args).map(|v| crate::repository::any_entity_surface_of_revolution(v)))
+        "SWEPT_SURFACE" => Some(crate::parse::parsers::parse_swept_surface(args).map(|v| crate::repository::any_entity_swept_surface(v)))
+        "RECTANGULAR_TRIMMED_SURFACE" => Some(crate::parse::parsers::parse_rectangular_trimmed_surface(args).map(|v| crate::repository::any_entity_rectangular_trimmed_surface(v)))
+        "POLYLINE" => Some(crate::parse::parsers::parse_polyline(args).map(|v| crate::repository::any_entity_polyline(v)))
+        "VECTOR" => Some(crate::parse::parsers::parse_vector(args).map(|v| crate::repository::any_entity_vector(v)))
+        "LINE" => Some(crate::parse::parsers::parse_line(args).map(|v| crate::repository::any_entity_line(v)))
+        "REPRESENTATION_RELATIONSHIP" => Some(crate::parse::parsers::parse_representation_relationship(args).map(|v| crate::repository::any_entity_representation_relationship(v)))
+        "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION" => Some(crate::parse::parsers::parse_representation_relationship_with_transformation(args).map(|v| crate::repository::any_entity_representation_relationship_with_transformation(v)))
+        "SHAPE_REPRESENTATION_RELATIONSHIP" => Some(crate::parse::parsers::parse_shape_representation_relationship(args).map(|v| crate::repository::any_entity_shape_representation_relationship(v)))
+        "ADVANCED_BREP_SHAPE_REPRESENTATION" => Some(crate::parse::parsers::parse_advanced_brep_shape_representation(args).map(|v| crate::repository::any_entity_advanced_brep_shape_representation(v)))
+        "SHAPE_DEFINITION_REPRESENTATION" => Some(crate::parse::parsers::parse_shape_definition_representation(args).map(|v| crate::repository::any_entity_shape_definition_representation(v)))
+        "SHAPE_REPRESENTATION" => Some(crate::parse::parsers::parse_shape_representation(args).map(|v| crate::repository::any_entity_shape_representation(v)))
+        "REPRESENTATION" => Some(crate::parse::parsers::parse_representation(args).map(|v| crate::repository::any_entity_representation(v)))
+        "DESCRIPTIVE_REPRESENTATION_ITEM" => Some(crate::parse::parsers::parse_descriptive_representation_item(args).map(|v| crate::repository::any_entity_descriptive_representation_item(v)))
+        "MEASURE_REPRESENTATION_ITEM" => Some(crate::parse::parsers::parse_measure_representation_item(args).map(|v| crate::repository::any_entity_measure_representation_item(v)))
+        "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION" => Some(crate::parse::parsers::parse_context_dependent_shape_representation(args).map(|v| crate::repository::any_entity_context_dependent_shape_representation(v)))
+        "ITEM_DEFINED_TRANSFORMATION" => Some(crate::parse::parsers::parse_item_defined_transformation(args).map(|v| crate::repository::any_entity_item_defined_transformation(v)))
+        "NEXT_ASSEMBLY_USAGE_OCCURRENCE" => Some(crate::parse::parsers::parse_next_assembly_usage_occurrence(args).map(|v| crate::repository::any_entity_next_assembly_usage_occurrence(v)))
+        "PRODUCT_DEFINITION_SHAPE" => Some(crate::parse::parsers::parse_product_definition_shape(args).map(|v| crate::repository::any_entity_product_definition_shape(v)))
+        "PRODUCT_DEFINITION" => Some(crate::parse::parsers::parse_product_definition(args).map(|v| crate::repository::any_entity_product_definition(v)))
+        "PRODUCT_DEFINITION_CONTEXT" => Some(crate::parse::parsers::parse_product_definition_context(args).map(|v| crate::repository::any_entity_product_definition_context(v)))
+        "PRODUCT_DEFINITION_FORMATION" => Some(crate::parse::parsers::parse_product_definition_formation(args).map(|v| crate::repository::any_entity_product_definition_formation(v)))
+        "PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE" => Some(crate::parse::parsers::parse_product_definition_formation_with_specified_source(args).map(|v| crate::repository::any_entity_product_definition_formation_with_specified_source(v)))
+        "PROPERTY_DEFINITION" => Some(crate::parse::parsers::parse_property_definition(args).map(|v| crate::repository::any_entity_property_definition(v)))
+        "PROPERTY_DEFINITION_REPRESENTATION" => Some(crate::parse::parsers::parse_property_definition_representation(args).map(|v| crate::repository::any_entity_property_definition_representation(v)))
+        "PRODUCT_RELATED_PRODUCT_CATEGORY" => Some(crate::parse::parsers::parse_product_related_product_category(args).map(|v| crate::repository::any_entity_product_related_product_category(v)))
+        "PRODUCT" => Some(crate::parse::parsers::parse_product(args).map(|v| crate::repository::any_entity_product(v)))
+        "PRODUCT_CONTEXT" => Some(crate::parse::parsers::parse_product_context(args).map(|v| crate::repository::any_entity_product_context(v)))
+        "APPLICATION_PROTOCOL_DEFINITION" => Some(crate::parse::parsers::parse_application_protocol_definition(args).map(|v| crate::repository::any_entity_application_protocol_definition(v)))
+        "APPLICATION_CONTEXT" => Some(crate::parse::parsers::parse_application_context(args).map(|v| crate::repository::any_entity_application_context(v)))
+        "APPROVAL" => Some(crate::parse::parsers::parse_approval(args).map(|v| crate::repository::any_entity_approval(v)))
+        "APPROVAL_STATUS" => Some(crate::parse::parsers::parse_approval_status(args).map(|v| crate::repository::any_entity_approval_status(v)))
+        "APPROVAL_ROLE" => Some(crate::parse::parsers::parse_approval_role(args).map(|v| crate::repository::any_entity_approval_role(v)))
+        "APPROVAL_PERSON_ORGANIZATION" => Some(crate::parse::parsers::parse_approval_person_organization(args).map(|v| crate::repository::any_entity_approval_person_organization(v)))
+        "PERSON" => Some(crate::parse::parsers::parse_person(args).map(|v| crate::repository::any_entity_person(v)))
+        "ORGANIZATION" => Some(crate::parse::parsers::parse_organization(args).map(|v| crate::repository::any_entity_organization(v)))
+        "PERSON_AND_ORGANIZATION" => Some(crate::parse::parsers::parse_person_and_organization(args).map(|v| crate::repository::any_entity_person_and_organization(v)))
+        "DATE_AND_TIME" => Some(crate::parse::parsers::parse_date_and_time(args).map(|v| crate::repository::any_entity_date_and_time(v)))
+        "LOCAL_TIME" => Some(crate::parse::parsers::parse_local_time(args).map(|v| crate::repository::any_entity_local_time(v)))
+        "CALENDAR_DATE" => Some(crate::parse::parsers::parse_calendar_date(args).map(|v| crate::repository::any_entity_calendar_date(v)))
+        "COORDINATED_UNIVERSAL_TIME_OFFSET" => Some(crate::parse::parsers::parse_coordinated_universal_time_offset(args).map(|v| crate::repository::any_entity_coordinated_universal_time_offset(v)))
+        "SECURITY_CLASSIFICATION" => Some(crate::parse::parsers::parse_security_classification(args).map(|v| crate::repository::any_entity_security_classification(v)))
+        "SECURITY_CLASSIFICATION_LEVEL" => Some(crate::parse::parsers::parse_security_classification_level(args).map(|v| crate::repository::any_entity_security_classification_level(v)))
+        "CERTIFICATION" => Some(crate::parse::parsers::parse_certification(args).map(|v| crate::repository::any_entity_certification(v)))
+        "CERTIFICATION_TYPE" => Some(crate::parse::parsers::parse_certification_type(args).map(|v| crate::repository::any_entity_certification_type(v)))
+        "DOCUMENT" => Some(crate::parse::parsers::parse_document(args).map(|v| crate::repository::any_entity_document(v)))
+        "DOCUMENT_REFERENCE" => Some(crate::parse::parsers::parse_document_reference(args).map(|v| crate::repository::any_entity_document_reference(v)))
+        "DOCUMENT_TYPE" => Some(crate::parse::parsers::parse_document_type(args).map(|v| crate::repository::any_entity_document_type(v)))
+        "KINEMATIC_LINK" => Some(crate::parse::parsers::parse_kinematic_link(args).map(|v| crate::repository::any_entity_kinematic_link(v)))
+        "KINEMATIC_JOINT" => Some(crate::parse::parsers::parse_kinematic_joint(args).map(|v| crate::repository::any_entity_kinematic_joint(v)))
+        "KINEMATIC_PAIR" => Some(crate::parse::parsers::parse_kinematic_pair(args).map(|v| crate::repository::any_entity_kinematic_pair(v)))
+        "GEOMETRIC_TOLERANCE" => Some(crate::parse::parsers::parse_geometric_tolerance(args).map(|v| crate::repository::any_entity_geometric_tolerance(v)))
+        "DATUM" => Some(crate::parse::parsers::parse_datum(args).map(|v| crate::repository::any_entity_datum(v)))
+        "DATUM_FEATURE" => Some(crate::parse::parsers::parse_datum_feature(args).map(|v| crate::repository::any_entity_datum_feature(v)))
+        "DIMENSIONAL_SIZE" => Some(crate::parse::parsers::parse_dimensional_size(args).map(|v| crate::repository::any_entity_dimensional_size(v)))
+        "MANIFOLD_SOLID_BREP" => Some(crate::parse::parsers::parse_manifold_solid_brep(args).map(|v| crate::repository::any_entity_manifold_solid_brep(v)))
+        "CLOSED_SHELL" => Some(crate::parse::parsers::parse_closed_shell(args).map(|v| crate::repository::any_entity_closed_shell(v)))
+        "OPEN_SHELL" => Some(crate::parse::parsers::parse_open_shell(args).map(|v| crate::repository::any_entity_open_shell(v)))
+        "CONNECTED_FACE_SET" => Some(crate::parse::parsers::parse_connected_face_set(args).map(|v| crate::repository::any_entity_connected_face_set(v)))
+        "SHELL_BASED_SURFACE_MODEL" => Some(crate::parse::parsers::parse_shell_based_surface_model(args).map(|v| crate::repository::any_entity_shell_based_surface_model(v)))
+        "ADVANCED_FACE" => Some(crate::parse::parsers::parse_advanced_face(args).map(|v| crate::repository::any_entity_advanced_face(v)))
+        "FACE_SURFACE" => Some(crate::parse::parsers::parse_face_surface(args).map(|v| crate::repository::any_entity_face_surface(v)))
+        "SUBFACE" => Some(crate::parse::parsers::parse_subface(args).map(|v| crate::repository::any_entity_subface(v)))
+        "SHAPE_ASPECT" => Some(crate::parse::parsers::parse_shape_aspect(args).map(|v| crate::repository::any_entity_shape_aspect(v)))
+        "FACE_OUTER_BOUND" => Some(crate::parse::parsers::parse_face_outer_bound(args).map(|v| crate::repository::any_entity_face_outer_bound(v)))
+        "FACE_BOUND" => Some(crate::parse::parsers::parse_face_bound(args).map(|v| crate::repository::any_entity_face_bound(v)))
+        "EDGE_LOOP" => Some(crate::parse::parsers::parse_edge_loop(args).map(|v| crate::repository::any_entity_edge_loop(v)))
+        "ORIENTED_EDGE" => Some(crate::parse::parsers::parse_oriented_edge(args).map(|v| crate::repository::any_entity_oriented_edge(v)))
+        "EDGE_CURVE" => Some(crate::parse::parsers::parse_edge_curve(args).map(|v| crate::repository::any_entity_edge_curve(v)))
+        "VERTEX_POINT" => Some(crate::parse::parsers::parse_vertex_point(args).map(|v| crate::repository::any_entity_vertex_point(v)))
+        "COLOUR_RGB" => Some(crate::parse::parsers::parse_color_rgb(args).map(|v| crate::repository::any_entity_color_rgb(v)))
+        "DRAUGHTING_PRE_DEFINED_COLOUR" => Some(crate::parse::parsers::parse_draughting_pre_defined_color(args).map(|v| crate::repository::any_entity_draughting_pre_defined_color(v)))
+        "FILL_AREA_STYLE_COLOUR" => Some(crate::parse::parsers::parse_fill_area_style_color(args).map(|v| crate::repository::any_entity_fill_area_style_color(v)))
+        "FILL_AREA_STYLE" => Some(crate::parse::parsers::parse_fill_area_style(args).map(|v| crate::repository::any_entity_fill_area_style(v)))
+        "SURFACE_STYLE_FILL_AREA" => Some(crate::parse::parsers::parse_surface_style_fill_area(args).map(|v| crate::repository::any_entity_surface_style_fill_area(v)))
+        "SURFACE_SIDE_STYLE" => Some(crate::parse::parsers::parse_surface_side_style(args).map(|v| crate::repository::any_entity_surface_side_style(v)))
+        "SURFACE_STYLE_USAGE" => Some(crate::parse::parsers::parse_surface_style_usage(args).map(|v| crate::repository::any_entity_surface_style_usage(v)))
+        "PRESENTATION_LAYER_ASSIGNMENT" => Some(crate::parse::parsers::parse_presentation_layer_assignment(args).map(|v| crate::repository::any_entity_presentation_layer_assignment(v)))
+        "MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION" => Some(crate::parse::parsers::parse_mechanical_design_geometric_presentation_representation(args).map(|v| crate::repository::any_entity_mechanical_design_geometric_presentation_representation(v)))
+        "PRESENTATION_STYLE_ASSIGNMENT" => Some(crate::parse::parsers::parse_presentation_style_assignment(args).map(|v| crate::repository::any_entity_presentation_style_assignment(v)))
+        "STYLED_ITEM" => Some(crate::parse::parsers::parse_styled_item(args).map(|v| crate::repository::any_entity_styled_item(v)))
+        "OVER_RIDING_STYLED_ITEM" => Some(crate::parse::parsers::parse_over_riding_styled_item(args).map(|v| crate::repository::any_entity_over_riding_styled_item(v)))
+        "HIDDEN_ELEMENT_OVER_RIDING_STYLED_ITEM" => Some(crate::parse::parsers::parse_hidden_element_over_riding_styled_item(args).map(|v| crate::repository::any_entity_hidden_element_over_riding_styled_item(v)))
+        "ANNOTATION_OCCURRENCE" => Some(crate::parse::parsers::parse_annotation_occurrence(args).map(|v| crate::repository::any_entity_annotation_occurrence(v)))
+        "TEXT_LITERAL" => Some(crate::parse::parsers::parse_text_literal(args).map(|v| crate::repository::any_entity_text_literal(v)))
+        "DIMENSIONAL_EXPONENTS" => Some(crate::parse::parsers::parse_dimensional_exponents(args).map(|v| crate::repository::any_entity_dimensional_exponents(v)))
+        "UNCERTAINTY_MEASURE_WITH_UNIT" => Some(crate::parse::parsers::parse_uncertainty_measure_with_unit(args).map(|v| crate::repository::any_entity_uncertainty_measure_with_unit(v)))
+        "PLANE_ANGLE_MEASURE_WITH_UNIT" => Some(crate::parse::parsers::parse_plane_angle_measure_with_unit(args).map(|v| crate::repository::any_entity_plane_angle_measure_with_unit(v)))
+        "MEASURE_WITH_UNIT" => Some(crate::parse::parsers::parse_measure_with_unit(args).map(|v| crate::repository::any_entity_measure_with_unit(v)))
+        "DERIVED_UNIT_ELEMENT" => Some(crate::parse::parsers::parse_derived_unit_element(args).map(|v| crate::repository::any_entity_derived_unit_element(v)))
+        "DERIVED_UNIT" => Some(crate::parse::parsers::parse_derived_unit(args).map(|v| crate::repository::any_entity_derived_unit(v)))
+        "BOOLEAN_RESULT" => Some(crate::parse::parsers::parse_boolean_result(args).map(|v| crate::repository::any_entity_boolean_result(v)))
+        "CSG_SOLID" => Some(crate::parse::parsers::parse_csg_solid(args).map(|v| crate::repository::any_entity_csg_solid(v)))
+        "BLOCK" => Some(crate::parse::parsers::parse_block(args).map(|v| crate::repository::any_entity_block(v)))
+        "SPHERE" => Some(crate::parse::parsers::parse_sphere(args).map(|v| crate::repository::any_entity_sphere(v)))
+        "RIGHT_CIRCULAR_CYLINDER" => Some(crate::parse::parsers::parse_right_circular_cylinder(args).map(|v| crate::repository::any_entity_right_circular_cylinder(v)))
+        "RIGHT_CIRCULAR_CONE" => Some(crate::parse::parsers::parse_right_circular_cone(args).map(|v| crate::repository::any_entity_right_circular_cone(v)))
+        "TORUS" => Some(crate::parse::parsers::parse_torus(args).map(|v| crate::repository::any_entity_torus(v)))
+        "RECTANGULAR_PYRAMID" => Some(crate::parse::parsers::parse_rectangular_pyramid(args).map(|v| crate::repository::any_entity_rectangular_pyramid(v)))
+        "RIGHT_ANGULAR_WEDGE" => Some(crate::parse::parsers::parse_right_angular_wedge(args).map(|v| crate::repository::any_entity_right_angular_wedge(v)))
+        "HALF_SPACE_SOLID" => Some(crate::parse::parsers::parse_half_space_solid(args).map(|v| crate::repository::any_entity_half_space_solid(v)))
+        _ => None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Character helpers
+// ---------------------------------------------------------------------------
+
+fn to_chars(s: String) -> Vec<char> {
+    let mut out = #[]
+    for ch in s {
+        out.push(ch)
+    }
+    out
+}
+
+fn slice_chars(cs: Vec<char>, start: i64, end: i64) -> String {
+    let mut out = ""
+    let mut i = start
+    while i < end && i < cs.len() {
+        out += f"{cs[i]}"
+        i += 1
+    }
+    out
+}
+
+fn substr(s: String, start: i64, end: i64) -> String {
+    slice_chars(to_chars(s), start, end)
+}
+
+fn cu_at(s: String, i: i64) -> i64 {
+    let cs = to_chars(s)
+    if i >= 0 && i < cs.len() { cs[i] as i64 } else { -1 }
+}
+
+// ---------------------------------------------------------------------------
+// Complex instances
+// ---------------------------------------------------------------------------
+
+/// Split a complex-instance body into parts at newlines outside nested
+/// parentheses and strings.
+pub fn split_complex_parts(body: String) -> Vec<String> {
+    let cs = to_chars(body)
+    let mut out = #[]
+    let mut depth: i64 = 0
+    let mut in_str = false
+    let mut skip_quote = false
+    let mut start: i64 = 0
+    let n = cs.len()
+    let mut i: i64 = 0
+    while i < n {
+        let ci = cs[i]
+        if ci == '\'' {
+            if skip_quote {
+                skip_quote = false
+            } else if in_str {
+                if i + 1 < n && cs[i + 1] == '\'' {
+                    skip_quote = true
+                } else {
+                    in_str = false
+                }
+            } else {
+                in_str = true
+            }
+        } else if !in_str {
+            if ci == '(' {
+                depth += 1
+            } else if ci == ')' {
+                if depth > 0 {
+                    depth -= 1
+                }
+            } else if (ci == '\n' || ci == '\r') && depth == 0 {
+                // Some writers break a part like `REPRESENTATION_CONTEXT`
+                // then `('Context', ...)`. That newline is not a separator.
+                let mut j = i + 1
+                while j < n {
+                    let cj = cs[j]
+                    if cj == ' ' || cj == '\t' || cj == '\n' || cj == '\r' {
+                        j += 1
+                    } else {
+                        break
+                    }
+                }
+                let next_is_lparen = j < n && cs[j] == '('
+                if !next_is_lparen {
+                    let part = slice_chars(cs, start, i).trim()
+                    if part.len() > 0 {
+                        out.push(part)
+                    }
+                    start = i + 1
+                }
+            }
+        }
+        i += 1
+    }
+    if start <= n {
+        let part = slice_chars(cs, start, n).trim()
+        if part.len() > 0 {
+            out.push(part)
+        }
+    }
+    out
+}
+
+fn expect_empty_parens(arg: String) -> Result<(), ParseErrorInfo> {
+    let inner = strip_outer_parens(arg)?.trim()
+    if inner.len() != 0 {
+        return fail_parse()
+    }
+    Ok(())
+}
+
+/// Parse a parenthesized complex-entity-instance body into its parts.
+pub fn parse_complex_instance(args: String) -> Result<ComplexInstance, ParseErrorInfo> {
+    let cs = to_chars(args.trim())
+    if cs.len() < 2 || cs[0] != '(' || cs[cs.len() - 1] != ')' {
+        return fail_parse()
+    }
+    let inner = slice_chars(cs, 1, cs.len() - 1)
+    let part_strs = split_complex_parts(inner)
+    let mut parts = #[]
+    for s in part_strs {
+        let scs = to_chars(s)
+        let lp_idx = match find_char_index(scs, '(') {
+            Some(j) => j
+            None => return fail_parse()
+        }
+        let name = slice_chars(scs, 0, lp_idx).trim()
+        let a = slice_chars(scs, lp_idx, scs.len()).trim()
+        let part = match name {
+
+            "GEOMETRIC_REPRESENTATION_CONTEXT" => {
+                let inner_args = strip_outer_parens(a)?
+                let dim = parse_int_dec(inner_args.trim())
+                ComplexPart::GeomRepCtx(crate::entities::context::GeometricRepresentationContext::new(dim))
+            }
+
+            "REPRESENTATION_CONTEXT" => {
+                let inner_args = strip_outer_parens(a)?
+                let args_parts = split_args(inner_args)
+                if args_parts.len() != 2 {
+                    return fail_parse()
+                }
+                let ident = strip_quotes(args_parts[0])
+                let ctx_type = strip_quotes(args_parts[1])
+                ComplexPart::RepCtx(crate::entities::context::RepresentationContext::new(ident, ctx_type))
+            }
+
+            "NAMED_UNIT" => {
+                let inner_args = strip_outer_parens(a)?.trim()
+                ComplexPart::NamedUnit(crate::entities::units::NamedUnit::new(inner_args))
+            }
+
+            "SI_UNIT" => {
+                let inner_args = strip_outer_parens(a)?
+                let args_parts = split_args(inner_args)
+                if args_parts.len() != 2 {
+                    return fail_parse()
+                }
+                let prefix = args_parts[0].trim()
+                let si_name = args_parts[1].trim()
+                ComplexPart::SiUnit(crate::entities::units::SiUnit::new(prefix, si_name))
+            }
+
+            "SOLID_ANGLE_UNIT" => {
+                expect_empty_parens(a)?
+                ComplexPart::SolidAngleUnit(crate::entities::units::SolidAngleUnit::new())
+            }
+
+            "CONVERSION_BASED_UNIT" => {
+                let inner_args = strip_outer_parens(a)?
+                let args_parts = split_args(inner_args)
+                if args_parts.len() != 2 {
+                    return fail_parse()
+                }
+                let unit_name = strip_quotes(args_parts[0])
+                let factor_id = parse_ref_int(args_parts[1])?
+                ComplexPart::ConversionBasedUnit(
+                    crate::entities::units::ConversionBasedUnit::new(
+                        unit_name
+                        crate::ids::Ref { id: factor_id }
+                    )
+                )
+            }
+
+            "LENGTH_UNIT" => {
+                expect_empty_parens(a)?
+                ComplexPart::LengthUnit(crate::entities::units::LengthUnit::new())
+            }
+
+            "MASS_UNIT" => {
+                expect_empty_parens(a)?
+                ComplexPart::MassUnit(crate::entities::units::MassUnit::new())
+            }
+
+            "PLANE_ANGLE_UNIT" => {
+                expect_empty_parens(a)?
+                ComplexPart::PlaneAngleUnit(crate::entities::units::PlaneAngleUnit::new())
+            }
+
+            "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT" => {
+                let inner_args = strip_outer_parens(a)?
+                let ids = parse_ref_ids(inner_args)?
+                ComplexPart::GlobUncCtx(crate::entities::context::GlobalUncertaintyAssignedContext::new(ids))
+            }
+
+            "GLOBAL_UNIT_ASSIGNED_CONTEXT" => {
+                let inner_args = strip_outer_parens(a)?
+                let ids = parse_ref_ids(inner_args)?
+                ComplexPart::GlobUnitCtx(crate::entities::context::GlobalUnitAssignedContext::new(ids))
+            }
+
+            "REPRESENTATION_RELATIONSHIP" => {
+                let inner_args = strip_outer_parens(a)?
+                let args_parts = split_args(inner_args)
+                if args_parts.len() != 4 {
+                    return fail_parse()
+                }
+                let rr_name = strip_quotes(args_parts[0])
+                let rr_desc = strip_quotes(args_parts[1])
+                let rep_1_id = parse_ref_int(args_parts[2])?
+                let rep_2_id = parse_ref_int(args_parts[3])?
+                ComplexPart::RepRel(
+                    crate::entities::product::RepresentationRelationship::new(
+                        rr_name
+                        rr_desc
+                        crate::ids::Ref { id: rep_1_id }
+                        crate::ids::Ref { id: rep_2_id }
+                    )
+                )
+            }
+
+            "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION" => {
+                let inner_args = strip_outer_parens(a)?
+                let args_parts = split_args(inner_args)
+                if args_parts.len() != 1 {
+                    return fail_parse()
+                }
+                let t_id = parse_ref_int(args_parts[0])?
+                ComplexPart::RepRelWT(
+                    crate::entities::product::RepresentationRelationshipWithTransformation::new(
+                        crate::ids::Ref { id: t_id }
+                    )
+                )
+            }
+
+            "SHAPE_REPRESENTATION_RELATIONSHIP" => {
+                expect_empty_parens(a)?
+                ComplexPart::ShapeRepRel
+            }
+
+            "REPRESENTATION_ITEM" => {
+                let inner_args = strip_outer_parens(a)?
+                ComplexPart::RepresentationItem(inner_args.trim())
+            }
+
+            "GEOMETRIC_REPRESENTATION_ITEM" => {
+                expect_empty_parens(a)?
+                ComplexPart::GeometricRepresentationItem
+            }
+
+            "SURFACE" => {
+                expect_empty_parens(a)?
+                ComplexPart::Surface
+            }
+
+            "BOUNDED_SURFACE" => {
+                expect_empty_parens(a)?
+                ComplexPart::BoundedSurface
+            }
+
+            "RATIONAL_B_SPLINE_CURVE" => {
+                let inner_args = strip_outer_parens(a)?
+                let weights = parse_literal_list(inner_args)
+                ComplexPart::RatBSpline(crate::entities::geometry::RationalBSplineCurve::new(weights))
+            }
+
+            "B_SPLINE_SURFACE" => {
+                let inner_args = strip_outer_parens(a)?
+                let inner_entity = parse_b_spline_surface(inner_args)?
+                ComplexPart::BSplineSurf(inner_entity)
+            }
+
+            "B_SPLINE_SURFACE_WITH_KNOTS" => {
+                let inner_args = strip_outer_parens(a)?
+                let inner_entity = parse_b_spline_surface_with_knots(inner_args)?
+                ComplexPart::BSplineSurfKnots(inner_entity)
+            }
+
+            "RATIONAL_B_SPLINE_SURFACE" => {
+                let inner_entity = parse_rational_b_spline_surface(a)?
+                ComplexPart::RatBSplineSurf(inner_entity)
+            }
+
+            _ => {
+                ComplexPart::Raw(name, a)
+            }
+        }
+        parts.push(part)
+    }
+    Ok(ComplexInstance::new(parts))
+}
+
+fn find_char_index(cs: Vec<char>, target: char) -> Option<i64> {
+    let mut i = 0
+    while i < cs.len() {
+        if cs[i] == target {
+            return Some(i)
+        }
+        i += 1
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Header parsing
+// ---------------------------------------------------------------------------
+
+fn parse_step_string_literal(s: String) -> Option<String> {
+    parse_step_string_literal_unescaped(s)
+}
+
+fn parse_string_or_dollar(arg: String) -> Option<StringOrDollar> {
+    let t = arg.trim()
+    if t == "$" {
+        return Some(StringOrDollar::Dollar)
+    }
+    match parse_step_string_literal(t) {
+        Some(v) => Some(StringOrDollar::Str(v))
+        None => None
+    }
+}
+
+fn parse_string_list_or_dollar(arg: String) -> Option<StringListOrDollar> {
+    let t = arg.trim()
+    if t == "$" {
+        return Some(StringListOrDollar::Dollar)
+    }
+    let cs = to_chars(t)
+    if !(cs.len() >= 2 && cs[0] == '(' && cs[cs.len() - 1] == ')') {
+        return None
+    }
+    let parts = split_args(t)
+    let mut values = #[]
+    for p in parts {
+        match parse_step_string_literal(p) {
+            Some(v) => values.push(v)
+            None => return None
+        }
+    }
+    Some(StringListOrDollar::List(values))
+}
+
+fn parse_file_description(stmt: String, args: String) -> HeaderEntity {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return HeaderEntity::Raw(stmt)
+    }
+    let desc_opt = parse_string_list_or_dollar(parts[0])
+    let impl_opt = parse_string_or_dollar(parts[1])
+    match (desc_opt, impl_opt) {
+        (Some(StringListOrDollar::List(desc)), Some(StringOrDollar::Str(impl_level))) => {
+            HeaderEntity::FileDescription(FileDescription::new(desc, impl_level))
+        }
+        _ => HeaderEntity::Raw(stmt)
+    }
+}
+
+fn parse_file_name(stmt: String, args: String) -> HeaderEntity {
+    let parts = split_args(args)
+    if parts.len() != 7 {
+        return HeaderEntity::Raw(stmt)
+    }
+    let a0 = parse_string_or_dollar(parts[0])
+    let a1 = parse_string_or_dollar(parts[1])
+    let a2 = parse_string_list_or_dollar(parts[2])
+    let a3 = parse_string_list_or_dollar(parts[3])
+    let a4 = parse_string_or_dollar(parts[4])
+    let a5 = parse_string_or_dollar(parts[5])
+    let a6 = parse_string_or_dollar(parts[6])
+    match (a0, a1, a2, a3, a4, a5, a6) {
+        (Some(n), Some(ts), Some(auth), Some(org), Some(pp), Some(os), Some(az)) => {
+            HeaderEntity::FileName(FileName::new(n, ts, auth, org, pp, os, az))
+        }
+        _ => HeaderEntity::Raw(stmt)
+    }
+}
+
+fn parse_file_schema(stmt: String, args: String) -> HeaderEntity {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return HeaderEntity::Raw(stmt)
+    }
+    let list_opt = parse_string_list_or_dollar(parts[0])
+    match list_opt {
+        Some(StringListOrDollar::List(schemas)) => {
+            HeaderEntity::FileSchema(FileSchema::new(schemas))
+        }
+        _ => HeaderEntity::Raw(stmt)
+    }
+}
+
+/// Parse the statements of a HEADER section.
+pub fn parse_header_section(header_section: String) -> HeaderSection {
+    let stmts = split_statements(header_section)
+    let mut entities = #[]
+    for stmt in stmts {
+        let cs = to_chars(stmt)
+        match find_char_index(cs, '(') {
+            None => entities.push(HeaderEntity::Raw(stmt))
+            Some(j) => {
+                let name = slice_chars(cs, 0, j).trim()
+                let args = slice_chars(cs, j, cs.len()).trim()
+                match name {
+                    "FILE_DESCRIPTION" => {
+                        entities.push(parse_file_description(stmt, args))
+                    }
+                    "FILE_NAME" => {
+                        entities.push(parse_file_name(stmt, args))
+                    }
+                    "FILE_SCHEMA" => {
+                        entities.push(parse_file_schema(stmt, args))
+                    }
+                    _ => {
+                        entities.push(HeaderEntity::Raw(stmt))
+                    }
+                }
+            }
+        }
+    }
+    HeaderSection::new(entities)
+}
+
+// ---------------------------------------------------------------------------
+// Section extraction
+// ---------------------------------------------------------------------------
+
+/// Find a literal outside STEP string literals. Returns the index when found;
+/// otherwise `(None, Some(quote_start))` if the input ends inside a string.
+pub fn find_literal_outside_step_strings_with_state(
+    haystack: String
+    needle: String
+) -> (Option<i64>, Option<i64>) {
+    let h = to_chars(haystack)
+    let nd = to_chars(needle)
+    let n = h.len()
+    let m = nd.len()
+    if m == 0 {
+        return (Some(0), None)
+    }
+    let needle0 = nd[0]
+    let mut in_string = false
+    let mut string_start = 0
+    let mut i: i64 = 0
+    while i < n {
+        let ci = h[i]
+        if in_string {
+            if ci == '\'' {
+                if i + 1 < n && h[i + 1] == '\'' {
+                    i += 2
+                    continue
+                }
+                in_string = false
+            }
+            i += 1
+            continue
+        }
+        if ci == '\'' {
+            in_string = true
+            string_start = i
+            i += 1
+            continue
+        }
+        if ci == needle0 && i + m <= n {
+            let mut j: i64 = 1
+            let mut ok = true
+            while j < m {
+                if h[i + j] != nd[j] {
+                    ok = false
+                    break
+                }
+                j += 1
+            }
+            if ok {
+                return (Some(i), None)
+            }
+        }
+        i += 1
+    }
+    if in_string {
+        (None, Some(string_start))
+    } else {
+        (None, None)
+    }
+}
+
+fn line_slice_at(s: String, idx: i64) -> String {
+    let cs = to_chars(s)
+    let n = cs.len()
+    let mut start = if idx < 0 { 0 } else { idx }
+    if start > n {
+        start = n
+    }
+    let mut i = start
+    while i > 0 {
+        if cs[i - 1] == '\n' {
+            break
+        }
+        i -= 1
+    }
+    let line_start = i
+    let mut j = start
+    while j < n {
+        if cs[j] == '\n' {
+            break
+        }
+        j += 1
+    }
+    slice_chars(cs, line_start, j)
+}
+
+fn index_to_line_col(s: String, idx: i64) -> (i64, i64) {
+    let cs = to_chars(s)
+    let mut line: i64 = 1
+    let mut col: i64 = 1
+    let mut i: i64 = 0
+    while i < idx && i < cs.len() {
+        if cs[i] == '\n' {
+            line += 1
+            col = 1
+        } else {
+            col += 1
+        }
+        i += 1
+    }
+    (line, col)
+}
+
+fn raise_unterminated_string_in_source<T>(
+    content: String
+    quote_idx: i64
+) -> Result<T, ParseErrorInfo> {
+    let line, col = index_to_line_col(content, quote_idx)
+    let stmt = line_slice_at(content, quote_idx)
+    fail_parse_at("unterminated STEP string literal", line, col, stmt)
+}
+
+/// Extract the DATA section, plus the 1-based position of its first character.
+pub fn extract_data_section_with_pos(
+    content: String
+) -> Result<(String, i64, i64), ParseErrorInfo> {
+    let data_idx = match find_literal_outside_step_strings_with_state(content, "DATA;") {
+        (Some(i), _) => i
+        (None, Some(q0)) => return raise_unterminated_string_in_source(content, q0)
+        (None, None) => return fail_parse_msg("missing DATA section")
+    }
+    let after_data = data_idx + 5
+    let cs = to_chars(content)
+    let tail = slice_chars(cs, after_data, cs.len())
+    let end_idx_local = match find_literal_outside_step_strings_with_state(tail, "ENDSEC;") {
+        (Some(i), _) => i
+        (None, Some(q0)) => {
+            return raise_unterminated_string_in_source(content, after_data + q0)
+        }
+        (None, None) => return fail_parse_msg("missing ENDSEC; for DATA section")
+    }
+    let line, col = index_to_line_col(content, after_data)
+    Ok((substr(tail, 0, end_idx_local), line, col))
+}
+
+/// Extract the HEADER section body when present.
+pub fn extract_header_section(content: String) -> Result<Option<String>, ParseErrorInfo> {
+    let header_idx = match find_literal_outside_step_strings_with_state(content, "HEADER;") {
+        (Some(i), _) => i
+        (None, Some(q0)) => return raise_unterminated_string_in_source(content, q0)
+        (None, None) => return Ok(None)
+    }
+    let after_header = header_idx + 7
+    let cs = to_chars(content)
+    let tail = slice_chars(cs, after_header, cs.len())
+    let end_idx_local = match find_literal_outside_step_strings_with_state(tail, "ENDSEC;") {
+        (Some(i), _) => i
+        (None, Some(q0)) => {
+            return raise_unterminated_string_in_source(content, after_header + q0)
+        }
+        (None, None) => return Ok(None)
+    }
+    Ok(Some(substr(tail, 0, end_idx_local).trim()))
+}
+
+// ---------------------------------------------------------------------------
+// Entry points
+// ---------------------------------------------------------------------------
+
+/// Parse a STEP file from a string into a repository.
+///
+/// Unknown entity names are preserved as raw entities for round-trip support.
+pub fn parse_repository_from_string(content: String) -> Result<Repository, ParseErrorInfo> {
+    // Normalize Windows CRLF (and stray CR) to keep parsing stable.
+    let normalized = content.replace("\r", "")
+    // Strip STEP block comments outside string literals.
+    let cleaned = strip_step_comments(normalized)?
+    let header = match extract_header_section(cleaned)? {
+        Some(h) => parse_header_section(h)
+        None => HeaderSection::empty()
+    }
+    let data_section, base_line, base_col = extract_data_section_with_pos(cleaned)?
+    let rows = tokenize_step_data_section_with_base(data_section, base_line, base_col)?
+    let mut repo = Repository::new()
+    for row in rows {
+        if row.name == "__COMPLEX__" {
+            let entity = parse_complex_instance(row.args)?
+            repo = repo.insert_with_id(row.id, any_entity_complex_instance(entity))
+        } else {
+            match parse_entity(row.name, row.args) {
+                Some(Ok(entity)) => repo = repo.insert_with_id(row.id, entity)
+                Some(Err(info)) => return Err(info)
+                None => {
+                    let raw = RawEntity::new(row.name, row.args)
+                    repo = repo.insert_with_id(row.id, any_entity_raw_entity(raw))
+                }
+            }
+        }
+    }
+    repo.set_header_mut(header)
+    Ok(repo)
+}
+
+/// Parse a STEP file from disk, preserving bytes 0–255 as code points.
+pub fn parse_repository_from_file(path: String) -> Result<Repository, crate::error::StepError> {
+    let bytes = match fs::read(path) {
+        Ok(b) => b
+        Err(e) => return Err(crate::error::StepError::io(f"{e}"))
+    }
+    let content = bytes_ascii_to_string_preserve(bytes)
+    match parse_repository_from_string(content) {
+        Ok(r) => Ok(r)
+        Err(info) => Err(crate::error::StepError::Parse(info))
+    }
+}
+
+/// Preserve each byte as a code point 0–255 (not UTF-8 decoding).
+pub fn bytes_ascii_to_string_preserve(bytes: Vec<u8>) -> String {
+    let mut out = ""
+    for byte in bytes {
+        out += f"{char::from_u32(byte as u32).unwrap_or('?')}"
+    }
+    out
+}
+
+/// Non-throwing alias of `parse_repository_from_string`.
+pub fn parse_repository_from_string_result(
+    content: String
+) -> Result<Repository, ParseErrorInfo> {
+    parse_repository_from_string(content)
+}

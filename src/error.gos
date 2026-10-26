@@ -1,0 +1,329 @@
+//! Error types shared by the parser, the loader, and the facade.
+//!
+//! Parse failures carry optional 1-based line/column information and the
+//! offending statement, so `Display` can reproduce the reference
+//! implementation's human-friendly diagnostic exactly.
+
+/// Structured information about a STEP parse error.
+///
+/// `line` and `col` are 1-based when present.
+pub struct ParseErrorInfo {
+    pub message: String
+    pub line: Option<i64>
+    pub col: Option<i64>
+    pub stmt: Option<String>
+}
+
+impl ParseErrorInfo {
+    /// Build an error with a message and no position information.
+    pub fn new(message: String) -> ParseErrorInfo {
+        ParseErrorInfo {
+            message: message
+            line: None
+            col: None
+            stmt: None
+        }
+    }
+
+    /// Attach the offending statement.
+    pub fn with_stmt(self, stmt: String) -> ParseErrorInfo {
+        ParseErrorInfo { stmt: Some(stmt), ..self }
+    }
+
+    /// Attach a 1-based position and the offending statement.
+    pub fn at(self, line: i64, col: i64, stmt: String) -> ParseErrorInfo {
+        ParseErrorInfo {
+            line: Some(line)
+            col: Some(col)
+            stmt: Some(stmt)
+            ..self
+        }
+    }
+
+    /// A one-line position prefix such as `@12:4: `, or the empty string.
+    pub fn position_prefix(self) -> String {
+        match (self.line, self.col) {
+            (Some(l), Some(c)) => f"@{l}:{c}: "
+            _ => ""
+        }
+    }
+}
+
+impl Display for ParseErrorInfo {
+    fn fmt(&self) -> String {
+        format_step_parse_error(self)
+    }
+}
+
+/// A font-loader failure. The message is exactly the reference diagnostic.
+pub struct LoaderError {
+    pub message: String
+}
+
+impl LoaderError {
+    pub fn new(message: String) -> LoaderError {
+        LoaderError { message: message }
+    }
+}
+
+impl Display for LoaderError {
+    fn fmt(&self) -> String {
+        self.message
+    }
+}
+
+/// The library's public error type.
+pub enum StepError {
+    Parse(ParseErrorInfo)
+    Loader(LoaderError)
+    Io(String)
+}
+
+impl StepError {
+    /// A generic parse error with no position.
+    pub fn parse(message: String) -> StepError {
+        StepError::Parse(ParseErrorInfo::new(message))
+    }
+
+    /// A loader error carrying the reference diagnostic.
+    pub fn loader(message: String) -> StepError {
+        StepError::Loader(LoaderError::new(message))
+    }
+
+    /// An I/O error rendered as text.
+    pub fn io(message: String) -> StepError {
+        StepError::Io(message)
+    }
+}
+
+impl Display for StepError {
+    fn fmt(&self) -> String {
+        match self {
+            StepError::Parse(info) => format_step_parse_error(info)
+            StepError::Loader(err) => err.message
+            StepError::Io(msg) => msg
+        }
+    }
+}
+
+impl From<ParseErrorInfo> for StepError {
+    fn from(info: ParseErrorInfo) -> StepError {
+        StepError::Parse(info)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic rendering
+// ---------------------------------------------------------------------------
+
+/// Number of UTF-16 code units a scalar occupies (1 for the BMP, 2 above it).
+///
+/// The reference parser reports columns in UTF-16 code units; Gossamer counts
+/// Unicode scalars, so every column computation goes through this helper.
+pub fn utf16_width(c: char) -> i64 {
+    if c as u32 > 0xFFFF { 2 } else { 1 }
+}
+
+/// Width of a string in UTF-16 code units.
+pub fn utf16_len(s: String) -> i64 {
+    let mut total = 0
+    for c in s {
+        total += utf16_width(c)
+    }
+    total
+}
+
+/// The scalars of a string as a sliceable `Vec<char>`.
+fn to_chars(s: String) -> Vec<char> {
+    let mut out = #[]
+    for c in s {
+        out.push(c)
+    }
+    out
+}
+
+/// Render the reference implementation's full parse diagnostic.
+pub fn format_step_parse_error(info: ParseErrorInfo) -> String {
+    let header = info.position_prefix() + info.message
+    let stmt_preview = match info.stmt {
+        None => ""
+        Some(s) => {
+            // Keep error output bounded; show a short preview of 240 UTF-16
+            // units and mark truncation.
+            let preview = match utf16_prefix(s, 240) {
+                Some(prefix) => prefix + "…"
+                None => s
+            }
+            "\nStatement:\n  " + preview.replace("\n", "\n  ")
+        }
+    }
+    let caret_block = match info.stmt {
+        None => ""
+        Some(s) => {
+            let first_line = match s.split("\n").get(0) {
+                Some(v) => v
+                None => s
+            }
+            match caret_col_in_stmt(info.message, first_line) {
+                None => ""
+                Some(col1) => "\n" + render_caret_line(col1)
+            }
+        }
+    }
+    let hint_block = match step_parse_hint(info) {
+        None => ""
+        Some(h) => "\nHint: " + h
+    }
+    header + stmt_preview + caret_block + hint_block
+}
+
+/// The first `limit` UTF-16 units of `s`, or `None` when `s` fits whole.
+fn utf16_prefix(s: String, limit: i64) -> Option<String> {
+    let mut used = 0
+    let mut out = ""
+    for c in s {
+        let w = utf16_width(c)
+        if used + w > limit {
+            return Some(out)
+        }
+        used += w
+        out += c.to_string()
+    }
+    None
+}
+
+fn render_spaces(n: i64) -> String {
+    let mut builder = ""
+    let mut i = 0
+    while i < n {
+        builder += " "
+        i += 1
+    }
+    builder
+}
+
+/// Render a caret line aligned with the statement shown under "Statement:".
+/// `col1` is 1-based.
+fn render_caret_line(col1: i64) -> String {
+    let col0 = if col1 <= 1 { 0 } else { col1 - 1 }
+    // Statement lines are prefixed with two spaces in format_step_parse_error.
+    "  " + render_spaces(col0) + "^"
+}
+
+/// Heuristically choose a useful caret position inside the statement.
+fn caret_col_in_stmt(msg: String, stmt_first_line: String) -> Option<i64> {
+    if stmt_first_line.len() == 0 {
+        return None
+    }
+
+    // Most common newbie mistake: missing '=' between id and entity name.
+    if msg.contains("missing '='") {
+        let chars = to_chars(stmt_first_line)
+        if chars.len() > 0 && chars[0] == '#' {
+            let mut digits = 0
+            let n = chars.len()
+            let mut i = 1
+            while i < n {
+                if chars[i].is_ascii_digit() {
+                    digits += 1
+                    i += 1
+                    continue
+                }
+                break
+            }
+            if digits > 0 {
+                // '=' should appear after "#" + digits.
+                return Some(2 + digits)
+            }
+        }
+        return Some(1)
+    }
+    if msg.contains("invalid entity id") {
+        return Some(1)
+    }
+    if msg.contains("missing '('") {
+        match stmt_first_line.find("=") {
+            None => None
+            Some(eq0) => {
+                let chars = to_chars(stmt_first_line)
+                let n = chars.len()
+                let mut i = eq0 + 1
+                while i < n && (chars[i] == ' ' || chars[i] == '\t') {
+                    i += 1
+                }
+                while i < n {
+                    let ci = chars[i]
+                    let is_upper = ci >= 'A' && ci <= 'Z'
+                    let is_digit = ci.is_ascii_digit()
+                    let is_us = ci == '_'
+                    if is_upper || is_digit || is_us {
+                        i += 1
+                        continue
+                    }
+                    break
+                }
+                // caret points where '(' should be (1-based)
+                return Some(i + 1)
+            }
+        }
+    }
+    if msg.contains("unterminated") && msg.contains("string") {
+        match stmt_first_line.find("'") {
+            Some(i) => return Some(i + 1)
+            None => return Some(1)
+        }
+    }
+    if msg.contains("unterminated") && msg.contains("comment") {
+        match stmt_first_line.find("/*") {
+            Some(i) => return Some(i + 1)
+            None => return Some(1)
+        }
+    }
+    None
+}
+
+/// Provide a beginner-friendly hint when intent can be inferred confidently.
+fn step_parse_hint(info: ParseErrorInfo) -> Option<String> {
+    let msg = info.message
+    if msg.contains("missing '='") {
+        return Some(
+            "In the DATA section, each entity statement looks like `#123=ENTITY_NAME(...);`. Make sure there is an '=' between the id and the entity name."
+        )
+    }
+    if msg.contains("invalid entity id") {
+        return Some(
+            "Entity ids start with '#' followed by digits, e.g. `#10=...;`. If you see `#10FOO(...)`, you probably missed an '='."
+        )
+    }
+    if msg.contains("missing '('") {
+        return Some(
+            "After an entity name you should have an argument list in parentheses, e.g. `PLANE(...);` or even `SOME_ENTITY();` if it has no arguments."
+        )
+    }
+    if msg.contains("unterminated") && msg.contains("string") {
+        return Some(
+            "STEP strings use single quotes, and a literal quote is written by doubling it: `It''s fine`. Make sure the string has a closing `'`."
+        )
+    }
+    if msg.contains("unterminated") && msg.contains("comment") {
+        return Some(
+            "Block comments must be closed with `*/`. If you intended the characters `/*` inside a string, wrap them in single quotes."
+        )
+    }
+    None
+}
+
+/// A generic parse error with no position, as a `Result` for `?` propagation.
+pub fn fail_parse<T>() -> Result<T, ParseErrorInfo> {
+    Err(ParseErrorInfo::new("parse error"))
+}
+
+/// A parse error with a message and no position.
+pub fn fail_parse_msg<T>(msg: String) -> Result<T, ParseErrorInfo> {
+    Err(ParseErrorInfo::new(msg))
+}
+
+/// A parse error with a message, position, and statement context.
+pub fn fail_parse_at<T>(msg: String, line: i64, col: i64, stmt: String) -> Result<T, ParseErrorInfo> {
+    Err(ParseErrorInfo::new(msg).at(line, col, stmt))
+}

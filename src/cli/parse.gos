@@ -1,0 +1,900 @@
+//! Argv preprocessing, parsing, and value access.
+//!
+//! The reference implementation delegates token parsing to
+//! the reference argument parser and models failures as exceptions that print and
+//! abort. This port keeps the same observable semantics but returns
+//! `Result<Args, CliError>`: every failure carries the exact message and an
+//! `exit_code`, and `report` performs the printing so callers stay in control.
+//!
+//! Semantics preserved from the reference:
+//!
+//! - `--` terminates option processing.
+//! - `-t 1 2 3` folds into `-t 1,2,3` (up to three non-option-like tokens); a
+//!   bare Vec3 option is dropped.
+//! - A bare single-value option followed by another option is dropped.
+//! - Negative numbers (`-1`, `-.5`, `-1e-3`, `-1,2,3`) and a bare `-` are
+//!   values, not options.
+//! - `--name`, `--name=value`, `-x`, `-xvalue`, and `-x=value` are recognised.
+//! - Repeated options append values; the first occurrence replaces a default.
+//! - Duplicate short options, range violations, and unknown arguments fail
+//!   with the reference's messages (range errors carry the full help block).
+
+use std::collections::Map
+use std::env
+use std::strings
+
+use crate::cli::help
+use crate::cli::spec::{Arg, Cli, NO_SHORT, is_flag, is_vec3}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// A CLI failure.
+///
+/// `message` is display-ready. Range violations already include the blank line
+/// and the full help block, so `report` can print it verbatim; help requests
+/// carry `exit_code == 0` and `to_stdout == true`.
+pub struct CliError {
+    /// The exact text to print.
+    pub message: String
+    /// Process exit status: 0 for help, 1 for value errors, 2 for usage errors.
+    pub exit_code: i32
+    /// Print to standard output instead of standard error.
+    pub to_stdout: bool
+}
+
+impl CliError {
+    /// A usage error (exit status 2, printed to stderr).
+    pub fn usage(message: String) -> CliError {
+        CliError {
+            message: message
+            exit_code: 2
+            to_stdout: false
+        }
+    }
+
+    /// A value-access error (exit status 1, printed to stderr).
+    pub fn value(message: String) -> CliError {
+        CliError {
+            message: message
+            exit_code: 1
+            to_stdout: false
+        }
+    }
+
+    /// A help request (exit status 0, printed to stdout).
+    pub fn help(message: String) -> CliError {
+        CliError {
+            message: message
+            exit_code: 0
+            to_stdout: true
+        }
+    }
+
+    /// Whether this error is a successful `--help` request.
+    pub fn is_help(self) -> bool {
+        self.to_stdout && self.exit_code == 0
+    }
+}
+
+impl Display for CliError {
+    fn fmt(&self) -> String {
+        self.message
+    }
+}
+
+/// Print an error or help text and return the process exit status.
+///
+/// A message that already ends with a newline (help blocks do) is printed
+/// as-is; otherwise one newline is appended. The caller decides whether to
+/// exit.
+pub fn report(err: CliError) -> i32 {
+    let msg = err.message
+    let text = if msg.ends_with("\n") { msg } else { msg + "\n" }
+    if err.to_stdout {
+        print(text)
+    } else {
+        eprint(text)
+    }
+    err.exit_code
+}
+
+// ---------------------------------------------------------------------------
+// Parsed values
+// ---------------------------------------------------------------------------
+
+/// The result of a successful parse.
+pub struct Args {
+    /// Values collected for each option, in the order supplied. A declared
+    /// default is present when the option was absent.
+    pub values: Map<String, Vec<String>>
+    /// Flag state by name.
+    pub flags: Map<String, bool>
+    /// The program name passed to `parse`.
+    pub prog: String
+    /// Raw argv tokens, before preprocessing (`command_line()` uses these).
+    pub argv: Vec<String>
+    /// The declarations this parse used.
+    pub specs: Map<String, Arg>
+    /// Declaration order (builder) or map order (compatibility API).
+    pub order: Vec<String>
+}
+
+/// A parsed numeric value.
+///
+/// Gossamer's native backend miscompiles `Result<f64, CliError>` (a scalar
+/// float payload with an aggregate error), so doubles are returned through
+/// this one-field wrapper. `value` is the parsed number.
+pub struct Number {
+    pub value: f64
+}
+
+impl Number {
+    pub fn get(self) -> f64 {
+        self.value
+    }
+}
+
+impl Display for Number {
+    fn fmt(&self) -> String {
+        f"{self.value}"
+    }
+}
+
+impl Args {
+    /// A required double value.
+    pub fn double(self, name: String) -> Result<Number, CliError> {
+        match self.values.get(name) {
+            Some(vals) => if vals.len() >= 1 {
+                let raw = vals[0]
+                match raw.trim().to_f64() {
+                    Some(value) => Ok(Number { value: value })
+                    None => Err(CliError::value(
+                        "error: invalid numeric value for --" + name + ": " + raw
+                    ))
+                }
+            } else {
+                Err(CliError::value("error: value not found for: " + name))
+            }
+            None => Err(CliError::value("error: value not found for: " + name))
+        }
+    }
+
+    /// A required integer value.
+    pub fn int(self, name: String) -> Result<i64, CliError> {
+        match self.values.get(name) {
+            Some(vals) => if vals.len() >= 1 {
+                let raw = vals[0]
+                match raw.trim().to_i64() {
+                    Some(value) => Ok(value)
+                    None => Err(CliError::value(
+                        "error: invalid integer value for --" + name + ": " + raw
+                    ))
+                }
+            } else {
+                Err(CliError::value("error: value not found for: " + name))
+            }
+            None => Err(CliError::value("error: value not found for: " + name))
+        }
+    }
+
+    /// A double value, falling back to `fallback` when it cannot be read.
+    pub fn double_or(self, name: String, fallback: f64) -> f64 {
+        match self.values.get(name) {
+            Some(vals) => if vals.len() >= 1 {
+                match vals[0].trim().to_f64() {
+                    Some(value) => value
+                    None => fallback
+                }
+            } else {
+                fallback
+            }
+            None => fallback
+        }
+    }
+
+    /// An integer value, falling back to `fallback` when it cannot be read.
+    pub fn int_or(self, name: String, fallback: i64) -> i64 {
+        match self.int(name) {
+            Ok(value) => value
+            Err(_) => fallback
+        }
+    }
+
+    /// A flag's state (false when the name was never declared).
+    pub fn flag(self, name: String) -> bool {
+        self.flags.get(name).unwrap_or(false)
+    }
+
+    /// Alias for `flag`.
+    pub fn bool_opt(self, name: String) -> bool {
+        self.flag(name)
+    }
+
+    /// A string option, or `None` when absent or not exactly one value.
+    pub fn string_opt(self, name: String) -> Option<String> {
+        match self.values.get(name) {
+            Some(vals) => if vals.len() == 1 { Some(vals[0]) } else { None }
+            None => None
+        }
+    }
+
+    /// Every value supplied for an option (empty when absent).
+    pub fn raw_values(self, name: String) -> Vec<String> {
+        match self.values.get(name) {
+            Some(vals) => vals
+            None => #[]
+        }
+    }
+
+    /// All values of an option parsed as doubles.
+    pub fn doubles(self, name: String) -> Result<Vec<f64>, CliError> {
+        let raw: Vec<String> = self.raw_values(name)
+        let mut out: Vec<f64> = #[]
+        for s in raw {
+            match s.trim().to_f64() {
+                Some(v) => out.push(v)
+                None => return Err(CliError::value(
+                    "error: invalid numeric value for --" + name + ": " + s
+                ))
+            }
+        }
+        Ok(out)
+    }
+
+    /// Parse the common translation bundle.
+    ///
+    /// Precedence: `--translate` with exactly three values overrides
+    /// `--tx`/`--ty`/`--tz`; when `--translate` is absent the three single
+    /// values are used. Wrong counts and non-numeric values produce the
+    /// reference messages.
+    pub fn translate_xyz(
+        self
+        translate_name: String = "translate"
+        tx_name: String = "tx"
+        ty_name: String = "ty"
+        tz_name: String = "tz"
+    ) -> Result<(f64, f64, f64), CliError> {
+        let raw: Vec<String> = self.raw_values(translate_name)
+        if raw.len() == 0 {
+            let x = self.double(tx_name)?.value
+            let y = self.double(ty_name)?.value
+            let z = self.double(tz_name)?.value
+            return Ok((x, y, z))
+        }
+        if raw.len() == 1 {
+            // Comma-separated form: `-t 1,2,3` / `--translate=1,2,3` (also the
+            // multi-token form after preprocessing folds it).
+            let comma_parts = strings::split(raw[0], ",")
+            if comma_parts.len() == 3 {
+                return translate_triple(comma_parts)
+            }
+            // Whitespace-separated single token: `-t "1 2 3"`.
+            let ws_parts = strings::split_whitespace(raw[0])
+            if ws_parts.len() == 3 {
+                return translate_triple(ws_parts)
+            }
+        }
+        // Legacy form: three separately-collected values.
+        if raw.len() == 3 {
+            return translate_triple(raw)
+        }
+        Err(CliError::value(
+            "error: --translate/-t expects exactly 3 numbers: <x> <y> <z>"
+        ))
+    }
+
+    /// The documented invocation for this run.
+    pub fn command_line(self) -> String {
+        help::command_line_text(self.prog, self.argv)
+    }
+
+    /// The self-documenting parameter block embedded in generated STEP files.
+    pub fn documentation(self) -> String {
+        help::documentation_text(self.prog, self.argv, self.order, self.specs, self.values, self.flags)
+    }
+}
+
+/// Parse exactly three strings as a translation triple.
+fn translate_triple(parts: Vec<String>) -> Result<(f64, f64, f64), CliError> {
+    let bad = CliError::value("error: --translate/-t expects numeric values")
+    if parts.len() != 3 {
+        return Err(bad)
+    }
+    let x = match parts[0].trim().to_f64() {
+        Some(v) => v
+        None => return Err(bad)
+    }
+    let y = match parts[1].trim().to_f64() {
+        Some(v) => v
+        None => return Err(bad)
+    }
+    let z = match parts[2].trim().to_f64() {
+        Some(v) => v
+        None => return Err(bad)
+    }
+    Ok((x, y, z))
+}
+
+// ---------------------------------------------------------------------------
+// Token classification
+// ---------------------------------------------------------------------------
+
+/// The scalars of a string, for ASCII-oriented token scanning.
+///
+/// `String::substring` takes byte offsets while `find` answers scalar indices,
+/// so token parsing walks a `Vec<char>` instead.
+fn chars_of(s: String) -> Vec<char> {
+    let mut out: Vec<char> = #[]
+    for c in s {
+        out.push(c)
+    }
+    out
+}
+
+/// The string formed by scalars `[start, end)`.
+fn chars_range(cs: Vec<char>, start: i64, end: i64) -> String {
+    let mut out = ""
+    let mut i = start
+    while i < end {
+        out += cs[i].to_string()
+        i += 1
+    }
+    out
+}
+
+/// Index of `target` in `cs`, or `None`.
+fn find_char(cs: Vec<char>, target: char) -> Option<i64> {
+    let mut i = 0
+    while i < cs.len() {
+        if cs[i] == target {
+            return Some(i)
+        }
+        i += 1
+    }
+    None
+}
+
+/// A token whose second scalar is a digit or a dot, e.g. `-1`, `-.5`, `-1e-3`.
+fn is_negative_number_token(s: String) -> bool {
+    if s.len() < 2 {
+        return false
+    }
+    if s[0] != '-' {
+        return false
+    }
+    let c1 = s[1]
+    (c1 >= '0' && c1 <= '9') || c1 == '.'
+}
+
+/// Whether a token would be treated as an option or terminator.
+///
+/// Negative numbers and a bare `-` are value-like.
+fn option_like(t: String) -> bool {
+    t.starts_with("-") && t != "-" && !is_negative_number_token(t)
+}
+
+/// Match an option-like token to a declaration.
+///
+/// Returns `(name, spec, has_inline_value)` and handles `--name`,
+/// `--name=value`, `-x`, `-xvalue`, and `-x=value`.
+fn spec_for_token(t: String, specs: Map<String, Arg>) -> Option<(String, Arg, bool)> {
+    if t.starts_with("--") && t.len() > 2 {
+        let cs = chars_of(t)
+        let mut name_end = t.len()
+        let mut inline = false
+        match find_char(cs, '=') {
+            Some(idx) => {
+                inline = true
+                if idx > 2 {
+                    name_end = idx
+                }
+            }
+            None => ()
+        }
+        let name = chars_range(cs, 2, name_end)
+        match specs.get(name) {
+            Some(spec) => Some((name, spec, inline))
+            None => None
+        }
+    } else if t.len() >= 2 && t[0] == '-' && !is_negative_number_token(t) {
+        let cs = chars_of(t)
+        let ch = cs[1]
+        let mut found: Option<(String, Arg)> = None
+        for (name, spec) in specs {
+            match found {
+                Some(_) => ()
+                None => if spec.short == ch {
+                    found = Some((name, spec))
+                }
+            }
+        }
+        match found {
+            Some((name, spec)) => Some((name, spec, t.len() > 2))
+            None => None
+        }
+    } else {
+        None
+    }
+}
+
+/// The value embedded in an inline token (`--name=value`, `-xvalue`,
+/// `-x=value`). A leading `=` on the short form is stripped.
+fn inline_value(t: String) -> String {
+    let cs = chars_of(t)
+    if t.starts_with("--") {
+        match find_char(cs, '=') {
+            Some(idx) => chars_range(cs, idx + 1, cs.len())
+            None => ""
+        }
+    } else {
+        let mut start = 2
+        if start < cs.len() && cs[start] == '=' {
+            start += 1
+        }
+        chars_range(cs, start, cs.len())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Argv preprocessing
+// ---------------------------------------------------------------------------
+
+/// Replicate the reference's value-collection semantics.
+///
+/// 1. Vec3 merge: `-t 1 2 3` becomes `-t 1,2,3`; a bare Vec3 option is dropped
+///    so `translate_xyz` falls back to `--tx/--ty/--tz`.
+/// 2. Bare option drop: a single-value option with no value is dropped, so it
+///    never swallows a following option and its default applies.
+fn preprocess_argv(argv: Vec<String>, specs: Map<String, Arg>) -> Vec<String> {
+    let mut out: Vec<String> = #[]
+    let n = argv.len()
+    let mut i = 0
+    while i < n {
+        let t = argv[i]
+        if t == "--" {
+            // Terminator: copy verbatim; the parser treats the rest as
+            // positionals.
+            while i < n {
+                out.push(argv[i])
+                i += 1
+            }
+            break
+        }
+        if option_like(t) {
+            match spec_for_token(t, specs) {
+                Some((_, spec, inline)) => if is_flag(spec) || inline {
+                    out.push(t)
+                    i += 1
+                } else if is_vec3(spec) {
+                    let mut vals: Vec<String> = #[]
+                    let mut j = i + 1
+                    while j < n && vals.len() < 3 && !option_like(argv[j]) {
+                        vals.push(argv[j])
+                        j += 1
+                    }
+                    if vals.len() == 0 {
+                        i = j
+                    } else {
+                        out.push(t)
+                        out.push(vals.join(","))
+                        i = j
+                    }
+                } else if i + 1 < n && !option_like(argv[i + 1]) {
+                    out.push(t)
+                    out.push(argv[i + 1])
+                    i += 2
+                } else {
+                    i += 1
+                }
+                None => {
+                    out.push(t)
+                    i += 1
+                }
+            }
+        } else {
+            out.push(t)
+            i += 1
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------
+
+/// The command line this process was started with, minus argv[0].
+fn env_tokens() -> Vec<String> {
+    let all = env::args()
+    let mut out: Vec<String> = #[]
+    let mut i = 1
+    while i < all.len() {
+        out.push(all[i])
+        i += 1
+    }
+    out
+}
+
+/// Build a usage error carrying the full help block.
+fn usage_error(
+    message: String
+    prog: String
+    description: String
+    order: Vec<String>
+    specs: Map<String, Arg>
+) -> CliError {
+    CliError::usage(message + "\n\n" + help::render_help(prog, description, order, specs))
+}
+
+/// Append a value to an option, replacing its default on first occurrence.
+fn append_value(
+    values: &mut Map<String, Vec<String>>
+    seen: &mut Map<String, bool>
+    name: String
+    value: String
+) -> () {
+    if seen.contains_key(name) {
+        let mut current: Vec<String> = match values.get(name) {
+            Some(vals) => vals
+            None => #[]
+        }
+        current.push(value)
+        let _ = values.insert(name, current)
+    } else {
+        let _ = values.insert(name, #[value])
+        let _ = seen.insert(name, true)
+    }
+}
+
+/// Expand a combined short cluster such as `-dv` or `-dofile`.
+///
+/// Flags set their state; the first value-taking option consumes the rest of
+/// the cluster as its inline value.
+fn handle_short_cluster(
+    t: String
+    specs: Map<String, Arg>
+    values: &mut Map<String, Vec<String>>
+    flags: &mut Map<String, bool>
+    seen: &mut Map<String, bool>
+    prog: String
+    description: String
+    order: Vec<String>
+    help_text: String
+    short_help: bool
+) -> Result<(), CliError> {
+    let cs = chars_of(t)
+    let n = cs.len()
+    let mut idx = 1
+    while idx < n {
+        let ch = cs[idx]
+        let mut found: Option<(String, Arg)> = None
+        for (name, spec) in specs {
+            match found {
+                Some(_) => ()
+                None => if spec.short == ch {
+                    found = Some((name, spec))
+                }
+            }
+        }
+        match found {
+            None => {
+                if ch == 'h' && short_help {
+                    return Err(CliError::help(help_text))
+                }
+                return Err(usage_error(
+                    "error: unexpected argument '-" + ch.to_string() + "' found"
+                    prog
+                    description
+                    order
+                    specs
+                ))
+            }
+            Some((name, spec)) => if is_flag(spec) {
+                let _ = flags.insert(name, true)
+                idx += 1
+            } else {
+                let mut start = idx + 1
+                if start < n && cs[start] == '=' {
+                    start += 1
+                }
+                if start < n {
+                    append_value(values, seen, name, chars_range(cs, start, n))
+                    return Ok(())
+                }
+                return Err(usage_error(
+                    "error: a value is required for '-" + ch.to_string() + "' but none was supplied"
+                    prog
+                    description
+                    order
+                    specs
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Collect map keys in the map's iteration order.
+fn collect_order(spec: Map<String, Arg>) -> Vec<String> {
+    let mut out: Vec<String> = #[]
+    for (name, _) in spec {
+        out.push(name)
+    }
+    out
+}
+
+/// The shared parser.
+fn parse_with_order(
+    spec: Map<String, Arg>
+    order: Vec<String>
+    prog: String
+    description: String
+    cli_args: Vec<String>
+) -> Result<Args, CliError> {
+    // Duplicate short options are a definition error; the reference catches
+    // them before parsing and prints only this message.
+    let mut seen_short: Map<char, String> = Map::new()
+    let mut duplicate: Option<(char, String, String)> = None
+    for name in order {
+        match spec.get(name) {
+            Some(arg) => if arg.short != NO_SHORT {
+                match seen_short.get(arg.short) {
+                    Some(first) => match duplicate {
+                        Some(_) => ()
+                        None => duplicate = Some((arg.short, first, name))
+                    }
+                    None => {
+                        let _ = seen_short.insert(arg.short, name)
+                    }
+                }
+            }
+            None => ()
+        }
+    }
+    match duplicate {
+        Some((ch, first, second)) => return Err(CliError::usage(
+            "error: duplicate short option '-" + ch.to_string() + "' used by --" + first + " and --" + second
+        ))
+        None => ()
+    }
+
+    let help_text = help::render_help(prog, description, order, spec)
+    let short_help = help::help_short_enabled(order, spec)
+    let long_help = help::help_long_enabled(order, spec)
+
+    let raw: Vec<String> = if cli_args.len() == 0 {
+        env_tokens()
+    } else {
+        cli_args
+    }
+    let tokens = preprocess_argv(raw, spec)
+
+    // Defaults. A single-value option with a declared default starts with that
+    // one value; first occurrence replaces it (see `append_value`).
+    let mut values: Map<String, Vec<String>> = Map::new()
+    let mut flags: Map<String, bool> = Map::new()
+    for name in order {
+        match spec.get(name) {
+            Some(arg) => {
+                if is_flag(arg) {
+                    let _ = flags.insert(name, false)
+                } else {
+                    match arg.default {
+                        Some(d) => {
+                            let _ = values.insert(name, #[d])
+                        }
+                        None => ()
+                    }
+                }
+            }
+            None => ()
+        }
+    }
+
+    let mut seen_option: Map<String, bool> = Map::new()
+    let mut options_on = true
+    let mut i = 0
+    let n = tokens.len()
+    while i < n {
+        let t = tokens[i]
+        if options_on && t == "--" {
+            options_on = false
+            i += 1
+            continue
+        }
+        if options_on && t == "--help" && long_help {
+            return Err(CliError::help(help_text))
+        }
+        if options_on && t == "-h" && short_help {
+            return Err(CliError::help(help_text))
+        }
+        if options_on && option_like(t) {
+            match spec_for_token(t, spec) {
+                None => {
+                    return Err(usage_error(
+                        "error: unexpected argument '" + t + "' found"
+                        prog
+                        description
+                        order
+                        spec
+                    ))
+                }
+                Some((name, arg, inline)) => if is_flag(arg) {
+                    if inline {
+                        if t.starts_with("--") {
+                            let embedded = inline_value(t)
+                            return Err(usage_error(
+                                "error: unexpected value '" + embedded + "' for '--" + name + "' found; no more were expected"
+                                prog
+                                description
+                                order
+                                spec
+                            ))
+                        }
+                        handle_short_cluster(
+                            t
+                            spec
+                            &mut values
+                            &mut flags
+                            &mut seen_option
+                            prog
+                            description
+                            order
+                            help_text
+                            short_help
+                        )?
+                    } else {
+                        let _ = flags.insert(name, true)
+                    }
+                    i += 1
+                } else {
+                    let value = if inline {
+                        inline_value(t)
+                    } else if i + 1 < n {
+                        tokens[i + 1]
+                    } else {
+                        ""
+                    }
+                    append_value(&mut values, &mut seen_option, name, value)
+                    i += if inline { 1 } else { 2 }
+                }
+            }
+        } else {
+            return Err(usage_error(
+                "error: unexpected value '" + t + "' found; no more were expected"
+                prog
+                description
+                order
+                spec
+            ))
+        }
+    }
+
+    // Range validation, in declaration order.
+    for name in order {
+        match spec.get(name) {
+            Some(arg) => {
+                let has_range = match (arg.min, arg.max) {
+                    (None, None) => false
+                    _ => true
+                }
+                if has_range {
+                    let raw_value = match values.get(name) {
+                        Some(vals) => if vals.len() >= 1 {
+                            vals[0]
+                        } else {
+                            return Err(usage_error(
+                                "error: value not found for: " + name
+                                prog
+                                description
+                                order
+                                spec
+                            ))
+                        }
+                        None => return Err(usage_error(
+                            "error: value not found for: " + name
+                            prog
+                            description
+                            order
+                            spec
+                        ))
+                    }
+                    let parsed = match raw_value.trim().to_f64() {
+                        Some(v) => v
+                        None => return Err(usage_error(
+                            "error: invalid numeric value for --" + name + ": " + raw_value
+                            prog
+                            description
+                            order
+                            spec
+                        ))
+                    }
+                    match arg.min {
+                        Some(minimum) => {
+                            let bad = if arg.min_exclusive {
+                                parsed <= minimum
+                            } else {
+                                parsed < minimum
+                            }
+                            if bad {
+                                let op = if arg.min_exclusive { ">" } else { ">=" }
+                                return Err(usage_error(
+                                    "error: --" + name + " must be " + op + " " + minimum.to_string()
+                                    prog
+                                    description
+                                    order
+                                    spec
+                                ))
+                            }
+                        }
+                        None => ()
+                    }
+                    match arg.max {
+                        Some(maximum) => {
+                            let bad = if arg.max_exclusive {
+                                parsed >= maximum
+                            } else {
+                                parsed > maximum
+                            }
+                            if bad {
+                                let op = if arg.max_exclusive { "<" } else { "<=" }
+                                return Err(usage_error(
+                                    "error: --" + name + " must be " + op + " " + maximum.to_string()
+                                    prog
+                                    description
+                                    order
+                                    spec
+                                ))
+                            }
+                        }
+                        None => ()
+                    }
+                }
+            }
+            None => ()
+        }
+    }
+
+    Ok(Args {
+        values: values
+        flags: flags
+        prog: prog
+        argv: raw
+        specs: spec
+        order: order
+    })
+}
+
+/// Parse an argument map (the reference-compatible entry point).
+///
+/// `prog` is the program name shown in help and `command_line()`. When
+/// `cli_args` is empty the process command line is used, with argv[0]
+/// stripped. Failures are returned, never printed; use `report` to print.
+///
+/// `raise_on_error` is accepted for source compatibility with the reference
+/// signature. Both values return `Err` here; the caller decides what to do.
+pub fn parse(
+    spec: Map<String, Arg>
+    prog: String = "PROG"
+    description: String = ""
+    cli_args: Vec<String> = #[]
+    raise_on_error: bool = true
+) -> Result<Args, CliError> {
+    let _ = raise_on_error
+    let order = collect_order(spec)
+    parse_with_order(spec, order, prog, description, cli_args)
+}
+
+/// Parse a `Cli` builder specification.
+///
+/// Declaration order is preserved for help rendering.
+pub fn parse_cli(
+    cli: Cli
+    cli_args: Vec<String> = #[]
+    raise_on_error: bool = true
+) -> Result<Args, CliError> {
+    let _ = raise_on_error
+    parse_with_order(cli.args, cli.order, cli.prog, cli.description, cli_args)
+}

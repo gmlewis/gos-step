@@ -1,0 +1,313 @@
+//! Argument specifications for the STEP example CLI.
+//!
+//! Two equivalent ways to declare a command are provided:
+//!
+//! 1. The compatibility API: a `Map<String, Arg>` built with the `opt_int`,
+//!    `opt_double`, `opt_string`, `flag`, `opt_vec3`, and `with_translate`
+//!    constructors. This mirrors the reference `@cli` module closely.
+//! 2. The fluent builder: `Cli::new(prog, description).flag(...).double(...)`.
+//!    It additionally records declaration order, which the help renderer uses
+//!    to print flags and options in the order they were declared.
+//!
+//! A `char` sentinel (`NO_SHORT`) rather than an `Option` keeps the ported
+//! call sites (`short: 't'`) identical to the reference.
+
+use std::collections::Map
+
+/// Sentinel meaning "this argument has no short option".
+///
+/// The reference implementation uses the NUL character for the same purpose.
+pub const NO_SHORT: char = '\0'
+
+/// The shape of an argument.
+pub enum ArgKind {
+    /// A single-value option (int, double, or string).
+    Value
+    /// A zero-or-three-values option, such as `--translate`.
+    Vec3
+    /// A boolean flag.
+    Flag
+}
+
+/// A declared argument.
+///
+/// Fields are public so the parser, help renderer, and documentation generator
+/// (all in sibling modules) can inspect them; nothing outside this crate needs
+/// to mutate a specification.
+pub struct Arg {
+    /// Short option letter, or `NO_SHORT`.
+    pub short: char
+    /// Help text shown in `--help`.
+    pub help: String
+    /// Whether the argument takes one value, three values, or none.
+    pub kind: ArgKind
+    /// Default value (single-value options only), already rendered as text.
+    pub default: Option<String>
+    /// Inclusive/exclusive lower bound, when one was declared.
+    pub min: Option<f64>
+    /// Inclusive/exclusive upper bound, when one was declared.
+    pub max: Option<f64>
+    /// Whether the lower bound is exclusive.
+    pub min_exclusive: bool
+    /// Whether the upper bound is exclusive.
+    pub max_exclusive: bool
+}
+
+/// Whether an argument is a flag.
+pub fn is_flag(arg: Arg) -> bool {
+    match arg.kind {
+        ArgKind::Flag => true
+        _ => false
+    }
+}
+
+/// Whether an argument is the three-value Vec3 shape.
+pub fn is_vec3(arg: Arg) -> bool {
+    match arg.kind {
+        ArgKind::Vec3 => true
+        _ => false
+    }
+}
+
+/// A single-value integer option.
+///
+/// The default is stored as text exactly as the reference stores it, so help
+/// output and `documentation()` agree byte-for-byte.
+pub fn opt_int(
+    default: i64
+    short: char = NO_SHORT
+    help: String = ""
+    min: Option<i64> = None
+    max: Option<i64> = None
+) -> Arg {
+    Arg {
+        short: short
+        help: help
+        kind: ArgKind::Value
+        default: Some(default.to_string())
+        min: match min {
+            Some(v) => Some(v as f64)
+            None => None
+        }
+        max: match max {
+            Some(v) => Some(v as f64)
+            None => None
+        }
+        min_exclusive: false
+        max_exclusive: false
+    }
+}
+
+/// A single-value floating-point option.
+///
+/// `min`/`max` are `Option`s rather than NaN sentinels; `min_exclusive` and
+/// `max_exclusive` select a strict bound.
+pub fn opt_double(
+    default: f64
+    short: char = NO_SHORT
+    help: String = ""
+    min: Option<f64> = None
+    max: Option<f64> = None
+    min_exclusive: bool = false
+    max_exclusive: bool = false
+) -> Arg {
+    Arg {
+        short: short
+        help: help
+        kind: ArgKind::Value
+        default: Some(crate::fmt::ref_to_string(default))
+        min: min
+        max: max
+        min_exclusive: min_exclusive
+        max_exclusive: max_exclusive
+    }
+}
+
+/// A single-value string option (no default, so absent means "unset").
+pub fn opt_string(short: char = NO_SHORT, help: String = "") -> Arg {
+    Arg {
+        short: short
+        help: help
+        kind: ArgKind::Value
+        default: None
+        min: None
+        max: None
+        min_exclusive: false
+        max_exclusive: false
+    }
+}
+
+/// A boolean flag.
+pub fn flag(short: char = NO_SHORT, help: String = "") -> Arg {
+    Arg {
+        short: short
+        help: help
+        kind: ArgKind::Flag
+        default: None
+        min: None
+        max: None
+        min_exclusive: false
+        max_exclusive: false
+    }
+}
+
+/// A `--name <x> <y> <z>` option.
+///
+/// The multi-token form (`-t 1 2 3`) is folded into a single comma-joined value
+/// by argv preprocessing; `-t 1,2,3`, `-t "1 2 3"`, and `--translate=1,2,3`
+/// work natively.
+pub fn opt_vec3(short: char = NO_SHORT, help: String = "") -> Arg {
+    Arg {
+        short: short
+        help: help
+        kind: ArgKind::Vec3
+        default: None
+        min: None
+        max: None
+        min_exclusive: false
+        max_exclusive: false
+    }
+}
+
+/// Add the common translation bundle to an existing argument map.
+///
+/// Adds `translate` (Vec3), and `tx`, `ty`, `tz` (doubles defaulting to 0.0).
+/// The map is taken and returned by value because Gossamer maps are mutated
+/// through a `mut` binding.
+pub fn with_translate(
+    mut args: Map<String, Arg>
+    short_translate: char = 't'
+    translate_help: String = "Translate by X Y Z in millimeters (overrides --tx/--ty/--tz)"
+    tx_help: String = "Translate X (mm)"
+    ty_help: String = "Translate Y (mm)"
+    tz_help: String = "Translate Z (mm)"
+) -> Map<String, Arg> {
+    args.insert(
+        "translate"
+        opt_vec3(short: short_translate, help: translate_help)
+    )
+    args.insert("tx", opt_double(0.0, help: tx_help))
+    args.insert("ty", opt_double(0.0, help: ty_help))
+    args.insert("tz", opt_double(0.0, help: tz_help))
+    args
+}
+
+/// A fluent command specification.
+///
+/// Unlike a bare `Map<String, Arg>`, `Cli` records declaration order so help
+/// lists flags and options as written rather than in hash order.
+///
+/// ```gos
+/// let cli = Cli::new("t", "demo")
+///     .flag("debug", short: 'd', help: "Debug")
+///     .string("out", short: 'o', help: "Output file")
+/// ```
+pub struct Cli {
+    /// Program name shown in `Usage:`.
+    pub prog: String
+    /// One-line description shown under the usage line.
+    pub description: String
+    /// Names in declaration order.
+    pub order: Vec<String>
+    /// Declared arguments by name.
+    pub args: Map<String, Arg>
+}
+
+impl Cli {
+    /// Start a new command specification.
+    pub fn new(prog: String, description: String = "") -> Cli {
+        Cli {
+            prog: prog
+            description: description
+            order: #[]
+            args: Map::new()
+        }
+    }
+
+    /// Declare (or replace) an argument.
+    pub fn arg(self, name: String, spec: Arg) -> Cli {
+        let mut out = self
+        if !out.args.contains_key(name) {
+            out.order.push(name)
+        }
+        out.args.insert(name, spec)
+        out
+    }
+
+    /// Declare a boolean flag.
+    pub fn flag(self, name: String, short: char = NO_SHORT, help: String = "") -> Cli {
+        self.arg(name, flag(short: short, help: help))
+    }
+
+    /// Declare an integer option.
+    pub fn int(
+        self
+        name: String
+        default: i64
+        short: char = NO_SHORT
+        help: String = ""
+        min: Option<i64> = None
+        max: Option<i64> = None
+    ) -> Cli {
+        self.arg(name, opt_int(default, short: short, help: help, min: min, max: max))
+    }
+
+    /// Declare a double option.
+    pub fn double(
+        self
+        name: String
+        default: f64
+        short: char = NO_SHORT
+        help: String = ""
+        min: Option<f64> = None
+        max: Option<f64> = None
+        min_exclusive: bool = false
+        max_exclusive: bool = false
+    ) -> Cli {
+        self.arg(
+            name
+            opt_double(
+                default
+                short: short
+                help: help
+                min: min
+                max: max
+                min_exclusive: min_exclusive
+                max_exclusive: max_exclusive
+            )
+        )
+    }
+
+    /// Declare a string option.
+    pub fn string(self, name: String, short: char = NO_SHORT, help: String = "") -> Cli {
+        self.arg(name, opt_string(short: short, help: help))
+    }
+
+    /// Declare a three-value option.
+    pub fn vec3(self, name: String, short: char = NO_SHORT, help: String = "") -> Cli {
+        self.arg(name, opt_vec3(short: short, help: help))
+    }
+
+    /// Add the common translation bundle (`--translate`, `--tx`, `--ty`, `--tz`).
+    pub fn with_translate(
+        self
+        short_translate: char = 't'
+        translate_help: String = "Translate by X Y Z in millimeters (overrides --tx/--ty/--tz)"
+        tx_help: String = "Translate X (mm)"
+        ty_help: String = "Translate Y (mm)"
+        tz_help: String = "Translate Z (mm)"
+    ) -> Cli {
+        let out = self.arg(
+            "translate"
+            opt_vec3(short: short_translate, help: translate_help)
+        )
+        let out = out.arg("tx", opt_double(0.0, help: tx_help))
+        let out = out.arg("ty", opt_double(0.0, help: ty_help))
+        out.arg("tz", opt_double(0.0, help: tz_help))
+    }
+
+    /// The declared arguments as a compatibility map.
+    pub fn spec_map(self) -> Map<String, Arg> {
+        self.args
+    }
+}

@@ -1,0 +1,154 @@
+//! 09-dovetail-slider-jig — a parametric dovetail slider jig with matching
+//! parts and clearances built from extruded profiles.
+
+use std::env
+use std::math
+use std::process
+
+use step
+
+fn dovetail_base(
+    width: f64
+    height: f64
+    length: f64
+    dovetail_width: f64
+    dovetail_height: f64
+    dovetail_angle: f64
+) -> step::Shape {
+    let hw = width / 2.0
+    let hh = height / 2.0
+    let dhw = dovetail_width / 2.0
+    let angle_rad = dovetail_angle * math::PI / 180.0
+    let dx = dovetail_height * step::tan(angle_rad)
+
+    // Construct a single CCW loop including the dovetail cutout at the top.
+    let outer = #[
+        (-hw, hh)
+        (-hw, -hh)
+        (hw, -hh)
+        (hw, hh)
+        (dhw, hh)
+        (dhw + dx, hh - dovetail_height)
+        (-dhw - dx, hh - dovetail_height)
+        (-dhw, hh)
+    ]
+    step::extrude(step::profile(outer), length)
+}
+
+fn dovetail_slider(
+    width: f64
+    height: f64
+    length: f64
+    angle: f64
+    clearance: f64 = 0.0
+) -> step::Shape {
+    // Apply clearance: narrow the width and shorten the height.
+    let c = clearance
+    let w = width - 2.0 * c
+    let h = height - c
+    let angle_rad = angle * math::PI / 180.0
+    let dx = h * step::tan(angle_rad)
+    let half_width = w / 2.0
+    let dt = #[
+        (-half_width, 0.0)
+        (half_width, 0.0)
+        (half_width + dx, h)
+        (-half_width - dx, h)
+    ]
+    // Flip Y to match the groove orientation (neck at the top, pointing down).
+    // We also reverse the order to maintain CCW orientation.
+    let n = dt.len() as i64
+    let mut flipped = #[]
+    let mut i = 0
+    while i < n {
+        let p = dt[n - 1 - i]
+        flipped.push((p.0, -p.1))
+        i += 1
+    }
+    step::extrude(step::profile(flipped), length)
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "baseWidth": step::opt_double(50.0, help: "Base block width (mm)", min: Some(0.0), min_exclusive: true)
+        "baseHeight": step::opt_double(15.0, help: "Base block height (mm)", min: Some(0.0), min_exclusive: true)
+        "baseLength": step::opt_double(100.0, help: "Base block length (mm)", min: Some(0.0), min_exclusive: true)
+        "dovetailWidth": step::opt_double(20.0, help: "Dovetail neck width (mm)", min: Some(0.0), min_exclusive: true)
+        "dovetailHeight": step::opt_double(8.0, help: "Dovetail groove depth (mm)", min: Some(0.0), min_exclusive: true)
+        "dovetailAngle": step::opt_double(14.0, help: "Dovetail angle (degrees from vertical)", min: Some(0.0), max: Some(45.0))
+        "sliderLength": step::opt_double(40.0, help: "Slider length (mm)", min: Some(0.0), min_exclusive: true)
+        "sliderPos": step::opt_double(30.0, help: "Slider position along the base (mm)")
+        "clearance": step::opt_double(0.1, help: "Clearance between slider and base (mm)", min: Some(0.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(step::with_translate(spec), "09-dovetail-slider-jig", "Generate a parametric dovetail slider jig.", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let base_width = args.double_or("baseWidth", 50.0)
+    let base_height = args.double_or("baseHeight", 15.0)
+    let base_length = args.double_or("baseLength", 100.0)
+    let dovetail_width = args.double_or("dovetailWidth", 20.0)
+    let dovetail_height = args.double_or("dovetailHeight", 8.0)
+    let dovetail_angle = args.double_or("dovetailAngle", 14.0)
+    let slider_length = args.double_or("sliderLength", 40.0)
+    let slider_pos = args.double_or("sliderPos", 30.0)
+    let clearance = args.double_or("clearance", 0.1)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    // Validate dovetail fits in base
+    if dovetail_width >= base_width {
+        eprintln("error: dovetailWidth must be less than baseWidth")
+        process::exit(1)
+    }
+    if dovetail_height >= base_height {
+        eprintln("error: dovetailHeight must be less than baseHeight")
+        process::exit(1)
+    }
+    let base = dovetail_base(base_width, base_height, base_length, dovetail_width, dovetail_height, dovetail_angle)
+        .named("dovetail-base")
+        .colored(step::PURPLE)
+        .moved(x: tx, y: ty, z: tz)
+
+    // Slider position:
+    // - Centered in X (same as base)
+    // - Neck of slider is at Y = base_height / 2 (top of base)
+    // - Slider points downwards into the groove.
+    let slider = dovetail_slider(dovetail_width, dovetail_height, slider_length, dovetail_angle, clearance: clearance)
+        .named("dovetail-slider")
+        .colored(step::ORANGE)
+        .moved(x: tx, y: ty + base_height / 2.0, z: tz + slider_pos)
+    let design = step::design(name: "dovetail-slider-jig", documentation: args.documentation())
+        .add(base)
+        .add(slider)
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

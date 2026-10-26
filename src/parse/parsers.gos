@@ -1,0 +1,2043 @@
+//! Entity parsers: one function per STEP entity name.
+//!
+//! Ported 1:1 from the reference implementation. Numeric handling, string
+//! decoding, and error positions are the contract.
+
+use crate::error::{ParseErrorInfo, fail_parse, fail_parse_msg}
+use crate::ids::{EntityId, Ref}
+use crate::parse::tokenize::{parse_int_dec, split_args}
+
+pub fn to_chars(s: String) -> Vec<char> {
+    let mut out = #[]
+    for ch in s {
+        out.push(ch)
+    }
+    out
+}
+
+pub fn slice_chars(cs: Vec<char>, start: i64, end: i64) -> String {
+    let mut out = ""
+    let mut i = start
+    while i < end && i < cs.len() {
+        out += f"{cs[i]}"
+        i += 1
+    }
+    out
+}
+
+pub fn substr(s: String, start: i64, end: i64) -> String {
+    slice_chars(to_chars(s), start, end)
+}
+
+pub fn strip_outer_parens(arg: String) -> Result<String, ParseErrorInfo> {
+    let t = arg.trim()
+    let cs = to_chars(t)
+    if cs.len() < 2 || cs[0] != '(' || cs[cs.len() - 1] != ')' {
+        return fail_parse()
+    }
+    Ok(slice_chars(cs, 1, cs.len() - 1))
+}
+
+pub fn cu_at(s: String, i: i64) -> i64 {
+    let chars = to_chars(s)
+    if i >= 0 && i < chars.len() { chars[i] as i64 } else { -1 }
+}
+
+
+pub fn refs_of_ids(ids: Vec<EntityId>) -> Vec<Ref> {
+    let mut out = #[]
+    for id in ids {
+        out.push(Ref { id: id })
+    }
+    out
+}
+
+pub fn parse_ref_rows(rows: Vec<String>) -> Result<Vec<Vec<Ref>>, ParseErrorInfo> {
+    let mut out = #[]
+    for row in rows {
+        out.push(refs_of_ids(parse_ref_ids(row)?))
+    }
+    Ok(out)
+}
+
+pub fn parse_doubles(parts: Vec<String>) -> Result<Vec<f64>, ParseErrorInfo> {
+    let mut out = #[]
+    for p in parts {
+        out.push(parse_double(p)?)
+    }
+    Ok(out)
+}
+pub fn parse_double(s: String) -> Result<f64, ParseErrorInfo> {
+    match s.trim().to_f64() {
+        Some(v) => Ok(v)
+        None => fail_parse()
+    }
+}
+
+pub fn strip_quotes(s: String) -> String {
+    let cs = to_chars(s.trim())
+    if cs.len() >= 2 && cs[0] == '\'' && cs[cs.len() - 1] == '\'' {
+        return slice_chars(cs, 1, cs.len() - 1)
+    }
+    s.trim()
+}
+
+pub fn parse_step_string_literal_unescaped(s: String) -> Option<String> {
+    let cs = to_chars(s.trim())
+    if cs.len() >= 2 && cs[0] == '\'' && cs[cs.len() - 1] == '\'' {
+        let inner = to_chars(slice_chars(cs, 1, cs.len() - 1))
+        let mut out = ""
+        let mut i = 0
+        while i < inner.len() {
+            if inner[i] == '\'' {
+                if i + 1 < inner.len() && inner[i + 1] == '\'' {
+                    out += "'"
+                    i += 2
+                    continue
+                } else {
+                    return None
+                }
+            }
+            out += f"{inner[i]}"
+            i += 1
+        }
+        return Some(out)
+    }
+    None
+}
+
+pub fn parse_step_string_or_strip(s: String) -> String {
+    match parse_step_string_literal_unescaped(s) {
+        Some(v) => v
+        None => strip_quotes(s)
+    }
+}
+
+pub fn parse_ref_int(s: String) -> Result<crate::ids::EntityId, ParseErrorInfo> {
+    let t = s.trim()
+    if t.len() < 2 || cu_at(t, 0) != '#' as i64 {
+        return fail_parse()
+    }
+    let v = parse_int_dec(substr(t, 1, t.len()))
+    Ok(crate::ids::EntityId { value: v, })
+}
+
+pub fn parse_cartesian_point(args: String,) -> Result<crate::entities::geometry::CartesianPoint, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let coord_parts = split_args(parts[1])
+    let coords = parse_doubles(coord_parts)?
+    Ok(crate::entities::geometry::CartesianPoint::new(name, coords))
+}
+
+pub fn parse_direction(args: String) -> Result<crate::entities::geometry::Direction, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let ratio_parts = split_args(parts[1])
+    let ratios = parse_doubles(ratio_parts)?
+    Ok(crate::entities::geometry::Direction::new(name, ratios))
+}
+
+pub fn parse_axis2_placement_3d(args: String,) -> Result<crate::entities::geometry::Axis2Placement3D, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() < 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let location_id = parse_ref_int(parts[1])?
+    let axis_id = parse_ref_int(parts[2])?
+    let ref_dir_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::geometry::Axis2Placement3D::new(
+        name
+        crate::ids::Ref { id: location_id, }
+        crate::ids::Ref { id: axis_id, }
+        crate::ids::Ref { id: ref_dir_id, }
+    ))
+}
+
+pub fn parse_axis1_placement(args: String,) -> Result<crate::entities::geometry::Axis1Placement, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let location_id = parse_ref_int(parts[1])?
+    let axis_id_str = parts[2].trim()
+    let axis = if axis_id_str == "$" {
+        None
+    } else {
+        Some(crate::ids::Ref { id: parse_ref_int(axis_id_str)?, })
+    }
+    Ok(crate::entities::geometry::Axis1Placement::new(name, crate::ids::Ref { id: location_id, }, axis: axis))
+}
+
+pub fn parse_axis2_placement_2d(args: String,) -> Result<crate::entities::geometry::Axis2Placement2D, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let location_id = parse_ref_int(parts[1])?
+    let dir_id_str = parts[2].trim()
+    let ref_direction = if dir_id_str == "$" {
+        None
+    } else {
+        Some(crate::ids::Ref { id: parse_ref_int(dir_id_str)?, })
+    }
+    Ok(crate::entities::geometry::Axis2Placement2D::new(
+        name
+        crate::ids::Ref { id: location_id, }
+        ref_direction: ref_direction
+    ))
+}
+
+pub fn parse_vector(args: String) -> Result<crate::entities::geometry::Vector, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let dir_id = parse_ref_int(parts[1])?
+    let magnitude = parse_double(parts[2])?
+    Ok(crate::entities::geometry::Vector::new(name, crate::ids::Ref { id: dir_id, }, magnitude))
+}
+
+pub fn parse_line(args: String) -> Result<crate::entities::geometry::Line, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pnt_id = parse_ref_int(parts[1])?
+    let vec_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::geometry::Line::new(name, crate::ids::Ref { id: pnt_id, }, crate::ids::Ref {
+        id: vec_id
+    }))
+}
+
+pub fn parse_circle(args: String) -> Result<crate::entities::geometry::Circle, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let radius_literal = parts[2].trim()
+    Ok(crate::entities::geometry::Circle::new(name, crate::ids::Ref { id: pos_id, }, radius_literal))
+}
+
+pub fn parse_ellipse(args: String) -> Result<crate::entities::geometry::Ellipse, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let semi_axis_1_literal = parts[2].trim()
+    let semi_axis_2_literal = parts[3].trim()
+    Ok(crate::entities::geometry::Ellipse::new(
+        name
+        crate::ids::Ref { id: pos_id, }
+        semi_axis_1_literal
+        semi_axis_2_literal
+    ))
+}
+
+pub fn parse_parabola(args: String) -> Result<crate::entities::geometry::Parabola, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let focal_dist = parse_double(parts[2])?
+    Ok(crate::entities::geometry::Parabola::new(name, crate::ids::Ref { id: pos_id, }, focal_dist))
+}
+
+pub fn parse_hyperbola(args: String) -> Result<crate::entities::geometry::Hyperbola, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let semi = parse_double(parts[2])?
+    let semi_imag = parse_double(parts[3])?
+    Ok(crate::entities::geometry::Hyperbola::new(name, crate::ids::Ref { id: pos_id, }, semi, semi_imag))
+}
+
+pub fn parse_cylindrical_surface(args: String,) -> Result<crate::entities::geometry::CylindricalSurface, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let radius_literal = parts[2].trim()
+    Ok(crate::entities::geometry::CylindricalSurface::new(
+        name
+        crate::ids::Ref { id: pos_id, }
+        radius_literal
+    ))
+}
+
+pub fn parse_conical_surface(args: String,) -> Result<crate::entities::geometry::ConicalSurface, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let radius_literal = parts[2].trim()
+    let semi_angle_literal = parts[3].trim()
+    Ok(crate::entities::geometry::ConicalSurface::new(
+        name
+        crate::ids::Ref { id: pos_id, }
+        radius_literal
+        semi_angle_literal
+    ))
+}
+
+pub fn parse_toroidal_surface(args: String,) -> Result<crate::entities::geometry::ToroidalSurface, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let major_radius_literal = parts[2].trim()
+    let minor_radius_literal = parts[3].trim()
+    Ok(crate::entities::geometry::ToroidalSurface::new(
+        name
+        crate::ids::Ref { id: pos_id, }
+        major_radius_literal
+        minor_radius_literal
+    ))
+}
+
+pub fn parse_b_spline_curve(args: String,) -> Result<crate::entities::geometry::BSplineCurve, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 6 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let degree = parse_int_dec(parts[1])
+    let cp_ids = parse_ref_ids(parts[2])?
+    let control_points = cp_ids.map(|id| { crate::ids::Ref { id: id } })
+    let curve_form = parts[3].trim()
+    let closed_str = parts[4].trim()
+    let self_i_str = parts[5].trim()
+    let closed_curve = if closed_str == ".T." {
+        true
+    } else if closed_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    let self_intersect = if self_i_str == ".T." {
+        true
+    } else if self_i_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    Ok(crate::entities::geometry::BSplineCurve::new(
+        name, degree, control_points, curve_form, closed_curve, self_intersect
+    ))
+}
+
+pub fn parse_int_list(arg: String) -> Vec<i64> {
+    split_args(arg).map(parse_int_dec)
+}
+
+pub fn parse_literal_list(arg: String) -> Vec<String> {
+    split_args(arg).map(parse_step_string_or_strip)
+}
+
+pub fn parse_b_spline_curve_with_knots(args: String,) -> Result<crate::entities::geometry::BSplineCurveWithKnots, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 9 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let degree = parse_int_dec(parts[1])
+    let cp_ids = parse_ref_ids(parts[2])?
+    let control_points = cp_ids.map(|id| { crate::ids::Ref { id: id } })
+    let curve_form = parts[3].trim()
+    let closed_str = parts[4].trim()
+    let self_i_str = parts[5].trim()
+    let closed_curve = if closed_str == ".T." {
+        true
+    } else if closed_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    let self_intersect = if self_i_str == ".T." {
+        true
+    } else if self_i_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    let knot_multiplicities = parse_int_list(parts[6])
+    let knots = parse_literal_list(parts[7])
+    let knot_spec = parts[8].trim()
+    Ok(crate::entities::geometry::BSplineCurveWithKnots::new(
+        name, degree, control_points, curve_form, closed_curve, self_intersect, knot_multiplicities
+        knots, knot_spec
+    ))
+}
+
+pub fn parse_composite_curve(args: String,) -> Result<crate::entities::geometry::CompositeCurve, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let seg_ids = parse_ref_ids(parts[1])?
+    let segments = seg_ids.map(|id| { crate::ids::Ref { id: id } })
+    let si_str = parts[2].trim()
+    let self_intersect = if si_str == ".T." {
+        true
+    } else if si_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    Ok(crate::entities::geometry::CompositeCurve::new(name, segments, self_intersect))
+}
+
+pub fn parse_composite_curve_segment(args: String,) -> Result<crate::entities::geometry::CompositeCurveSegment, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let trans_str = parts[0].trim()
+    let transition = match crate::entities::geometry::TransitionCode::from_string(trans_str) {
+        Some(t) => t
+        None => return fail_parse()
+    }
+    let ss_str = parts[1].trim()
+    let same_sense = if ss_str == ".T." {
+        true
+    } else if ss_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    let curve_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::geometry::CompositeCurveSegment::new(transition, same_sense, crate::ids::Ref {
+        id: curve_id
+    }))
+}
+
+pub fn parse_rational_b_spline_curve(args: String,) -> Result<crate::entities::geometry::RationalBSplineCurve, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let weights = parse_literal_list(parts[0])
+    Ok(crate::entities::geometry::RationalBSplineCurve::new(weights))
+}
+
+pub fn parse_b_spline_surface(args: String,) -> Result<crate::entities::geometry::BSplineSurface, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 7 {
+        return fail_parse()
+    }
+    let u_degree = parse_int_dec(parts[0])
+    let v_degree = parse_int_dec(parts[1])
+    let row_parts = split_args(parts[2])
+    let control_points_list = parse_ref_rows(row_parts)?
+    let surface_form = parts[3].trim()
+    let u_closed_str = parts[4].trim()
+    let v_closed_str = parts[5].trim()
+    let self_i_str = parts[6].trim()
+    let u_closed = if u_closed_str == ".T." {
+        true
+    } else if u_closed_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    let v_closed = if v_closed_str == ".T." {
+        true
+    } else if v_closed_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    let self_intersect = if self_i_str == ".T." {
+        true
+    } else if self_i_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    Ok(crate::entities::geometry::BSplineSurface::new(
+        u_degree, v_degree, control_points_list, surface_form, u_closed, v_closed, self_intersect
+    ))
+}
+
+pub fn parse_b_spline_surface_with_knots(args: String,) -> Result<crate::entities::geometry::BSplineSurfaceWithKnots, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 5 {
+        return fail_parse()
+    }
+    let u_mults = parse_int_list(parts[0])
+    let v_mults = parse_int_list(parts[1])
+    let u_knots = parse_literal_list(parts[2])
+    let v_knots = parse_literal_list(parts[3])
+    let knot_spec = parts[4].trim()
+    Ok(crate::entities::geometry::BSplineSurfaceWithKnots::new(
+        u_mults, v_mults, u_knots, v_knots, knot_spec
+    ))
+}
+
+pub fn parse_rational_b_spline_surface(args: String,) -> Result<crate::entities::geometry::RationalBSplineSurface, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    // parts[0] looks like: ((1.,...),(...),(...))
+    let row_parts = split_args(parts[0])
+    let weights = row_parts.map(parse_literal_list)
+    Ok(crate::entities::geometry::RationalBSplineSurface::new(weights))
+}
+
+pub fn parse_trimmed_curve(args: String,) -> Result<crate::entities::geometry::TrimmedCurve, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 6 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let basis_id = parse_ref_int(parts[1])?
+    let trim_1 = parts[2].trim()
+    let trim_2 = parts[3].trim()
+    let sense_str = parts[4].trim()
+    let sense = if sense_str == ".T." {
+        true
+    } else if sense_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    let master_rep = parts[5].trim()
+    Ok(crate::entities::geometry::TrimmedCurve::new(
+        name
+        crate::ids::Ref { id: basis_id, }
+        trim_1
+        trim_2
+        sense
+        master_rep
+    ))
+}
+
+pub fn parse_offset_curve_3d(args: String,) -> Result<crate::entities::geometry::OffsetCurve3D, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let basis_id = parse_ref_int(parts[1])?
+    let distance = parse_double(parts[2])?
+    let dir_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::geometry::OffsetCurve3D::new(name, crate::ids::Ref { id: basis_id, }, distance, crate::ids::Ref {
+        id: dir_id
+    }))
+}
+
+pub fn parse_offset_surface(args: String,) -> Result<crate::entities::geometry::OffsetSurface, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let basis_id = parse_ref_int(parts[1])?
+    let distance = parse_double(parts[2])?
+    let si_str = parts[3].trim()
+    let self_intersect = if si_str == ".T." {
+        true
+    } else if si_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    Ok(crate::entities::geometry::OffsetSurface::new(
+        name
+        crate::ids::Ref { id: basis_id, }
+        distance
+        self_intersect
+    ))
+}
+
+pub fn parse_surface_of_linear_extrusion(args: String,) -> Result<crate::entities::geometry::SurfaceOfLinearExtrusion, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let curve_id = parse_ref_int(parts[1])?
+    let axis_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::geometry::SurfaceOfLinearExtrusion::new(name, crate::ids::Ref { id: curve_id, }, crate::ids::Ref {
+        id: axis_id
+    }))
+}
+
+pub fn parse_surface_of_revolution(args: String,) -> Result<crate::entities::geometry::SurfaceOfRevolution, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let curve_id = parse_ref_int(parts[1])?
+    let axis_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::geometry::SurfaceOfRevolution::new(name, crate::ids::Ref { id: curve_id, }, crate::ids::Ref {
+        id: axis_id
+    }))
+}
+
+pub fn parse_swept_surface(args: String,) -> Result<crate::entities::geometry::SweptSurface, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let curve_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::geometry::SweptSurface::new(name, crate::ids::Ref { id: curve_id, }))
+}
+
+pub fn parse_rectangular_trimmed_surface(args: String,) -> Result<crate::entities::geometry::RectangularTrimmedSurface, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 8 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let basis_id = parse_ref_int(parts[1])?
+    let u1 = parts[2].trim()
+    let u2 = parts[3].trim()
+    let v1 = parts[4].trim()
+    let v2 = parts[5].trim()
+    let usense_str = parts[6].trim()
+    let usense = if usense_str == ".T." {
+        true
+    } else if usense_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    let vsense_str = parts[7].trim()
+    let vsense = if vsense_str == ".T." {
+        true
+    } else if vsense_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    Ok(crate::entities::geometry::RectangularTrimmedSurface::new(
+        name
+        crate::ids::Ref { id: basis_id, }
+        u1
+        u2
+        v1
+        v2
+        usense
+        vsense
+    ))
+}
+
+pub fn parse_polyline(args: String) -> Result<crate::entities::geometry::Polyline, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let ids = parse_ref_ids(parts[1])?
+    let points = ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::geometry::Polyline::new(name, points))
+}
+
+pub fn parse_boolean_result(args: String,) -> Result<crate::entities::geometry::BooleanResult, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let op_str = parts[1].trim()
+    let operator = match crate::entities::geometry::BooleanOperator::from_string(op_str) {
+        Some(op) => op
+        None => return fail_parse()
+    }
+    let op1_id = parse_ref_int(parts[2])?
+    let op2_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::geometry::BooleanResult::new(name, operator, crate::ids::Ref { id: op1_id, }, crate::ids::Ref {
+        id: op2_id
+    }))
+}
+
+pub fn parse_csg_solid(args: String) -> Result<crate::entities::geometry::CsgSolid, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let root_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::geometry::CsgSolid::new(name, crate::ids::Ref { id: root_id, }))
+}
+
+pub fn parse_block(args: String) -> Result<crate::entities::geometry::Block, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 5 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let x = parse_double(parts[2])?
+    let y = parse_double(parts[3])?
+    let z = parse_double(parts[4])?
+    Ok(crate::entities::geometry::Block::new(name, crate::ids::Ref { id: pos_id, }, x, y, z))
+}
+
+pub fn parse_sphere(args: String) -> Result<crate::entities::geometry::Sphere, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let radius = parse_double(parts[2])?
+    Ok(crate::entities::geometry::Sphere::new(name, crate::ids::Ref { id: pos_id, }, radius))
+}
+
+pub fn parse_right_circular_cylinder(args: String,) -> Result<crate::entities::geometry::RightCircularCylinder, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let height = parse_double(parts[2])?
+    let radius = parse_double(parts[3])?
+    Ok(crate::entities::geometry::RightCircularCylinder::new(
+        name
+        crate::ids::Ref { id: pos_id, }
+        height
+        radius
+    ))
+}
+
+pub fn parse_right_circular_cone(args: String,) -> Result<crate::entities::geometry::RightCircularCone, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 5 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let height = parse_double(parts[2])?
+    let radius = parse_double(parts[3])?
+    let semi_angle = parse_double(parts[4])?
+    Ok(crate::entities::geometry::RightCircularCone::new(
+        name
+        crate::ids::Ref { id: pos_id, }
+        height
+        radius
+        semi_angle
+    ))
+}
+
+pub fn parse_torus(args: String) -> Result<crate::entities::geometry::Torus, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let major = parse_double(parts[2])?
+    let minor = parse_double(parts[3])?
+    Ok(crate::entities::geometry::Torus::new(name, crate::ids::Ref { id: pos_id, }, major, minor))
+}
+
+pub fn parse_rectangular_pyramid(args: String,) -> Result<crate::entities::geometry::RectangularPyramid, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 5 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let x = parse_double(parts[2])?
+    let y = parse_double(parts[3])?
+    let height = parse_double(parts[4])?
+    Ok(crate::entities::geometry::RectangularPyramid::new(
+        name
+        crate::ids::Ref { id: pos_id, }
+        x
+        y
+        height
+    ))
+}
+
+pub fn parse_right_angular_wedge(args: String,) -> Result<crate::entities::geometry::RightAngularWedge, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 6 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    let x = parse_double(parts[2])?
+    let y = parse_double(parts[3])?
+    let z = parse_double(parts[4])?
+    let ltx = parse_double(parts[5])?
+    Ok(crate::entities::geometry::RightAngularWedge::new(
+        name
+        crate::ids::Ref { id: pos_id, }
+        x
+        y
+        z
+        ltx
+    ))
+}
+
+pub fn parse_half_space_solid(args: String,) -> Result<crate::entities::geometry::HalfSpaceSolid, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let surf_id = parse_ref_int(parts[1])?
+    let flag_str = parts[2].trim()
+    let flag = if flag_str == ".T." {
+        true
+    } else if flag_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    Ok(crate::entities::geometry::HalfSpaceSolid::new(name, crate::ids::Ref { id: surf_id, }, flag))
+}
+
+pub fn parse_plane(args: String) -> Result<crate::entities::geometry::Plane, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let pos_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::geometry::Plane::new(name, crate::ids::Ref { id: pos_id, }))
+}
+
+pub fn parse_representation_relationship(args: String,) -> Result<crate::entities::product::RepresentationRelationship, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let description = strip_quotes(parts[1])
+    let rep_1_id = parse_ref_int(parts[2])?
+    let rep_2_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::product::RepresentationRelationship::new(
+        name
+        description
+        crate::ids::Ref { id: rep_1_id, }
+        crate::ids::Ref { id: rep_2_id, }
+    ))
+}
+
+pub fn parse_representation_relationship_with_transformation(args: String,) -> Result<crate::entities::product::RepresentationRelationshipWithTransformation, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let t_id = parse_ref_int(parts[0])?
+    Ok(crate::entities::product::RepresentationRelationshipWithTransformation::new(crate::ids::Ref {
+        id: t_id
+    }))
+}
+
+pub fn parse_shape_representation_relationship(args: String,) -> Result<crate::entities::product::ShapeRepresentationRelationship, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let description = strip_quotes(parts[1])
+    let rep_1_id = parse_ref_int(parts[2])?
+    let rep_2_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::product::ShapeRepresentationRelationship::new(
+        name
+        description
+        crate::ids::Ref { id: rep_1_id, }
+        crate::ids::Ref { id: rep_2_id, }
+    ))
+}
+
+pub fn parse_advanced_brep_shape_representation(args: String,) -> Result<crate::entities::product::AdvancedBrepShapeRepresentation, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let item_ids = parse_ref_ids(parts[1])?
+    let items = item_ids.map(|id| { crate::ids::Ref { id: id } })
+    let ctx_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::product::AdvancedBrepShapeRepresentation::new(name, items, crate::ids::Ref {
+        id: ctx_id
+    }))
+}
+
+pub fn parse_shape_definition_representation(args: String,) -> Result<crate::entities::product::ShapeDefinitionRepresentation, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let def_id = parse_ref_int(parts[0])?
+    let rep_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::product::ShapeDefinitionRepresentation::new(crate::ids::Ref { id: def_id, }, crate::ids::Ref {
+        id: rep_id
+    }))
+}
+
+pub fn parse_shape_representation(args: String,) -> Result<crate::entities::product::ShapeRepresentation, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let item_ids = parse_ref_ids(parts[1])?
+    let items = item_ids.map(|id| { crate::ids::Ref { id: id } })
+    let ctx_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::product::ShapeRepresentation::new(name, items, crate::ids::Ref { id: ctx_id, }))
+}
+
+pub fn parse_representation(args: String,) -> Result<crate::entities::product::Representation, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let item_ids = parse_ref_ids(parts[1])?
+    let items = item_ids.map(|id| { crate::ids::Ref { id: id } })
+    let ctx_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::product::Representation::new(name, items, crate::ids::Ref { id: ctx_id, }))
+}
+
+pub fn parse_descriptive_representation_item(args: String,) -> Result<crate::entities::product::DescriptiveRepresentationItem, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse_msg(
+            "DESCRIPTIVE_REPRESENTATION_ITEM expected 2 args, got " +
+                f"{parts.len()}" +
+                ": " +
+                args
+        )
+    }
+    // Use proper STEP string unescaping so roundtrip is stable for values
+    // containing doubled quotes (''), semicolons, or comment-like sequences.
+    let name = parse_step_string_or_strip(parts[0])
+    let description = parse_step_string_or_strip(parts[1])
+    Ok(crate::entities::product::DescriptiveRepresentationItem::new(name, description))
+}
+
+pub fn parse_measure_representation_item(args: String,) -> Result<crate::entities::product::MeasureRepresentationItem, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let value_component_str = parts[1].trim()
+    let value_component = if value_component_str.starts_with("POSITIVE_RATIO_MEASURE"
+    ) {
+        // Looks like: POSITIVE_RATIO_MEASURE(7850.)
+        // Keep the inner literal as raw string to preserve formatting.
+        let args_part = substr(
+            value_component_str
+            "POSITIVE_RATIO_MEASURE".len()
+            value_component_str.len()
+        )
+        let inner = strip_outer_parens(args_part)?.trim()
+        crate::entities::product::MeasureValueComponent::PositiveRatioMeasure(
+            crate::entities::units::PositiveRatioMeasure::new(inner)
+        )
+    } else {
+        crate::entities::product::MeasureValueComponent::Raw(value_component_str)
+    }
+    let unit_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::product::MeasureRepresentationItem::new(name, value_component, crate::ids::Ref {
+        id: unit_id
+    }))
+}
+
+pub fn parse_context_dependent_shape_representation(args: String,) -> Result<crate::entities::product::ContextDependentShapeRepresentation, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let rr_id = parse_ref_int(parts[0])?
+    let rpr_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::product::ContextDependentShapeRepresentation::new(crate::ids::Ref { id: rr_id, }, crate::ids::Ref {
+        id: rpr_id
+    }))
+}
+
+pub fn parse_item_defined_transformation(args: String,) -> Result<crate::entities::product::ItemDefinedTransformation, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let description = strip_quotes(parts[1])
+    let i1_id = parse_ref_int(parts[2])?
+    let i2_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::product::ItemDefinedTransformation::new(
+        name
+        description
+        crate::ids::Ref { id: i1_id, }
+        crate::ids::Ref { id: i2_id, }
+    ))
+}
+
+pub fn parse_next_assembly_usage_occurrence(args: String,) -> Result<crate::entities::product::NextAssemblyUsageOccurrence, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 6 {
+        return fail_parse()
+    }
+    let id = strip_quotes(parts[0])
+    let name = strip_quotes(parts[1])
+    let description = strip_quotes(parts[2])
+    let relating_id = parse_ref_int(parts[3])?
+    let related_id = parse_ref_int(parts[4])?
+    let designator = strip_quotes(parts[5])
+    Ok(crate::entities::product::NextAssemblyUsageOccurrence::new(
+        id
+        name
+        description
+        crate::ids::Ref { id: relating_id, }
+        crate::ids::Ref { id: related_id, }
+        designator
+    ))
+}
+
+pub fn parse_product_definition_shape(args: String,) -> Result<crate::entities::product::ProductDefinitionShape, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let description = strip_quotes(parts[1])
+    let def_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::product::ProductDefinitionShape::new(name, description, crate::ids::Ref {
+        id: def_id
+    }))
+}
+
+pub fn parse_product_definition(args: String,) -> Result<crate::entities::product::ProductDefinition, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let id = strip_quotes(parts[0])
+    let description = strip_quotes(parts[1])
+    let formation_id = parse_ref_int(parts[2])?
+    let ctx_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::product::ProductDefinition::new(
+        id
+        description
+        crate::ids::Ref { id: formation_id, }
+        crate::ids::Ref { id: ctx_id, }
+    ))
+}
+
+pub fn parse_product_definition_context(args: String,) -> Result<crate::entities::product::ProductDefinitionContext, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let app_id = parse_ref_int(parts[1])?
+    let life_cycle_stage = strip_quotes(parts[2])
+    Ok(crate::entities::product::ProductDefinitionContext::new(
+        name
+        crate::ids::Ref { id: app_id, }
+        life_cycle_stage
+    ))
+}
+
+pub fn parse_product_definition_formation(args: String,) -> Result<crate::entities::product::ProductDefinitionFormation, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let id = strip_quotes(parts[0])
+    let description = strip_quotes(parts[1])
+    let product_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::product::ProductDefinitionFormation::new(id, description, crate::ids::Ref {
+        id: product_id
+    }))
+}
+
+pub fn parse_property_definition(args: String,) -> Result<crate::entities::product::PropertyDefinition, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let description = strip_quotes(parts[1])
+    let def_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::product::PropertyDefinition::new(name, description, crate::ids::Ref { id: def_id, }))
+}
+
+pub fn parse_property_definition_representation(args: String,) -> Result<crate::entities::product::PropertyDefinitionRepresentation, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let def_id = parse_ref_int(parts[0])?
+    let rep_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::product::PropertyDefinitionRepresentation::new(crate::ids::Ref { id: def_id, }, crate::ids::Ref {
+        id: rep_id
+    }))
+}
+
+pub fn parse_product_definition_formation_with_specified_source(args: String,) -> Result<crate::entities::product::ProductDefinitionFormationWithSpecifiedSource, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let id = strip_quotes(parts[0])
+    let description = strip_quotes(parts[1])
+    let product_id = parse_ref_int(parts[2])?
+    let make_or_buy = parts[3].trim()
+    // Enumeration like .NOT_KNOWN.
+    if make_or_buy != ".NOT_KNOWN." &&
+        make_or_buy != ".MAKE." &&
+        make_or_buy != ".BUY." {
+        return fail_parse()
+    }
+    Ok(crate::entities::product::ProductDefinitionFormationWithSpecifiedSource::new(
+        id
+        description
+        crate::ids::Ref { id: product_id, }
+        make_or_buy
+    ))
+}
+
+pub fn parse_product_related_product_category(args: String,) -> Result<crate::entities::product::ProductRelatedProductCategory, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let description = strip_quotes(parts[1])
+    let product_ids = parse_ref_ids(parts[2])?
+    let products = product_ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::product::ProductRelatedProductCategory::new(name, description, products))
+}
+
+pub fn parse_product(args: String) -> Result<crate::entities::product::Product, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let id = strip_quotes(parts[1])
+    let description = strip_quotes(parts[2])
+    let ref_ids = parse_ref_ids(parts[3])?
+    let refs = ref_ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::product::Product::new(name, id, description, refs))
+}
+
+pub fn parse_product_context(args: String,) -> Result<crate::entities::product::ProductContext, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let frame_id = parse_ref_int(parts[1])?
+    let discipline_type = strip_quotes(parts[2])
+    Ok(crate::entities::product::ProductContext::new(
+        name
+        crate::ids::Ref { id: frame_id, }
+        discipline_type
+    ))
+}
+
+pub fn parse_application_protocol_definition(args: String,) -> Result<crate::entities::product::ApplicationProtocolDefinition, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let status = strip_quotes(parts[0])
+    let schema_name = strip_quotes(parts[1])
+    let year = parse_int_dec(parts[2])
+    let application_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::product::ApplicationProtocolDefinition::new(status, schema_name, year, crate::ids::Ref {
+        id: application_id
+    }))
+}
+
+pub fn parse_application_context(args: String,) -> Result<crate::entities::product::ApplicationContext, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let application = strip_quotes(parts[0])
+    Ok(crate::entities::product::ApplicationContext::new(application))
+}
+
+pub fn parse_approval(args: String) -> Result<crate::entities::product::Approval, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let status_id = parse_ref_int(parts[0])?
+    let level = strip_quotes(parts[1])
+    Ok(crate::entities::product::Approval::new(crate::ids::Ref { id: status_id, }, level))
+}
+
+pub fn parse_approval_status(args: String,) -> Result<crate::entities::product::ApprovalStatus, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    Ok(crate::entities::product::ApprovalStatus::new(name))
+}
+
+pub fn parse_approval_role(args: String,) -> Result<crate::entities::product::ApprovalRole, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let role = strip_quotes(parts[0])
+    Ok(crate::entities::product::ApprovalRole::new(role))
+}
+
+pub fn parse_approval_person_organization(args: String,) -> Result<crate::entities::product::ApprovalPersonOrganization, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let po_id = parse_ref_int(parts[0])?
+    let approval_id = parse_ref_int(parts[1])?
+    let role_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::product::ApprovalPersonOrganization::new(
+        crate::ids::Ref { id: po_id, }
+        crate::ids::Ref { id: approval_id, }
+        crate::ids::Ref { id: role_id, }
+    ))
+}
+
+pub fn parse_person(args: String) -> Result<crate::entities::product::Person, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 6 {
+        return fail_parse()
+    }
+    let id = strip_quotes(parts[0])
+    let last = strip_quotes(parts[1])
+    let first = strip_quotes(parts[2])
+    let middles = parse_literal_list(parts[3])
+    let prefixes = parse_literal_list(parts[4])
+    let suffixes = parse_literal_list(parts[5])
+    Ok(crate::entities::product::Person::new(id, last, first, middles, prefixes, suffixes))
+}
+
+pub fn parse_organization(args: String,) -> Result<crate::entities::product::Organization, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let id = strip_quotes(parts[0])
+    let name = strip_quotes(parts[1])
+    let desc = strip_quotes(parts[2])
+    Ok(crate::entities::product::Organization::new(id, name, desc))
+}
+
+pub fn parse_person_and_organization(args: String,) -> Result<crate::entities::product::PersonAndOrganization, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let person_id = parse_ref_int(parts[0])?
+    let org_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::product::PersonAndOrganization::new(crate::ids::Ref { id: person_id, }, crate::ids::Ref {
+        id: org_id
+    }))
+}
+
+pub fn parse_date_and_time(args: String,) -> Result<crate::entities::product::DateAndTime, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let date_id = parse_ref_int(parts[0])?
+    let time_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::product::DateAndTime::new(crate::ids::Ref { id: date_id, }, crate::ids::Ref {
+        id: time_id
+    }))
+}
+
+pub fn parse_local_time(args: String) -> Result<crate::entities::product::LocalTime, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let hour = parse_int_dec(parts[0])
+    let minute = parse_int_dec(parts[1])
+    let second = parse_double(parts[2])?
+    let zone_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::product::LocalTime::new(hour, minute, second, crate::ids::Ref { id: zone_id, }))
+}
+
+pub fn parse_calendar_date(args: String,) -> Result<crate::entities::product::CalendarDate, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let year = parse_int_dec(parts[0])
+    let day = parse_int_dec(parts[1])
+    let month = parse_int_dec(parts[2])
+    Ok(crate::entities::product::CalendarDate::new(year, day, month))
+}
+
+pub fn parse_coordinated_universal_time_offset(args: String,) -> Result<crate::entities::product::CoordinatedUniversalTimeOffset, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let hour = parse_int_dec(parts[0])
+    let minute = parse_int_dec(parts[1])
+    let sense = parts[2].trim()
+    Ok(crate::entities::product::CoordinatedUniversalTimeOffset::new(hour, minute, sense))
+}
+
+pub fn parse_security_classification(args: String,) -> Result<crate::entities::product::SecurityClassification, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let purpose = strip_quotes(parts[1])
+    let level_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::product::SecurityClassification::new(name, purpose, crate::ids::Ref {
+        id: level_id
+    }))
+}
+
+pub fn parse_security_classification_level(args: String,) -> Result<crate::entities::product::SecurityClassificationLevel, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    Ok(crate::entities::product::SecurityClassificationLevel::new(name))
+}
+
+pub fn parse_certification(args: String,) -> Result<crate::entities::product::Certification, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let purpose = strip_quotes(parts[1])
+    let kind_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::product::Certification::new(name, purpose, crate::ids::Ref { id: kind_id, }))
+}
+
+pub fn parse_certification_type(args: String,) -> Result<crate::entities::product::CertificationType, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let desc = strip_quotes(parts[0])
+    Ok(crate::entities::product::CertificationType::new(desc))
+}
+
+pub fn parse_document(args: String) -> Result<crate::entities::product::Document, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let id = strip_quotes(parts[0])
+    let name = strip_quotes(parts[1])
+    let description = strip_quotes(parts[2])
+    let kind_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::product::Document::new(id, name, description, crate::ids::Ref { id: kind_id, }))
+}
+
+pub fn parse_document_reference(args: String,) -> Result<crate::entities::product::DocumentReference, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let id = strip_quotes(parts[0])
+    let name = strip_quotes(parts[1])
+    let description = strip_quotes(parts[2])
+    let doc_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::product::DocumentReference::new(id, name, description, crate::ids::Ref {
+        id: doc_id
+    }))
+}
+
+pub fn parse_document_type(args: String,) -> Result<crate::entities::product::DocumentType, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let desc = strip_quotes(parts[0])
+    Ok(crate::entities::product::DocumentType::new(desc))
+}
+
+pub fn parse_kinematic_link(args: String,) -> Result<crate::entities::kinematics::KinematicLink, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    Ok(crate::entities::kinematics::KinematicLink::new(name))
+}
+
+pub fn parse_kinematic_joint(args: String,) -> Result<crate::entities::kinematics::KinematicJoint, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let l1_id = parse_ref_int(parts[1])?
+    let l2_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::kinematics::KinematicJoint::new(name, crate::ids::Ref { id: l1_id, }, crate::ids::Ref {
+        id: l2_id
+    }))
+}
+
+pub fn parse_kinematic_pair(args: String,) -> Result<crate::entities::kinematics::KinematicPair, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let desc = strip_quotes(parts[1])
+    let joint_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::kinematics::KinematicPair::new(name, desc, crate::ids::Ref { id: joint_id, }))
+}
+
+pub fn parse_geometric_tolerance(args: String,) -> Result<crate::entities::tolerancing::GeometricTolerance, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let desc = strip_quotes(parts[1])
+    let mag_id = parse_ref_int(parts[2])?
+    let shape_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::tolerancing::GeometricTolerance::new(name, desc, crate::ids::Ref { id: mag_id, }, crate::ids::Ref {
+        id: shape_id
+    }))
+}
+
+pub fn parse_datum(args: String) -> Result<crate::entities::tolerancing::Datum, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 5 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let desc = strip_quotes(parts[1])
+    let shape_id = parse_ref_int(parts[2])?
+    let definitional = parts[3].trim()
+    let identification = strip_quotes(parts[4])
+    Ok(crate::entities::tolerancing::Datum::new(
+        name
+        desc
+        crate::ids::Ref { id: shape_id, }
+        definitional
+        identification
+    ))
+}
+
+pub fn parse_datum_feature(args: String,) -> Result<crate::entities::tolerancing::DatumFeature, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let desc = strip_quotes(parts[1])
+    let shape_id = parse_ref_int(parts[2])?
+    let definitional = parts[3].trim()
+    Ok(crate::entities::tolerancing::DatumFeature::new(
+        name
+        desc
+        crate::ids::Ref { id: shape_id, }
+        definitional
+    ))
+}
+
+pub fn parse_dimensional_size(args: String,) -> Result<crate::entities::tolerancing::DimensionalSize, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let shape_id = parse_ref_int(parts[0])?
+    let name = strip_quotes(parts[1])
+    Ok(crate::entities::tolerancing::DimensionalSize::new(crate::ids::Ref { id: shape_id, }, name))
+}
+
+pub fn parse_manifold_solid_brep(args: String,) -> Result<crate::entities::topology::ManifoldSolidBrep, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let outer_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::topology::ManifoldSolidBrep::new(name, crate::ids::Ref { id: outer_id, }))
+}
+
+pub fn parse_closed_shell(args: String,) -> Result<crate::entities::topology::ClosedShell, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let face_ids = parse_ref_ids(parts[1])?
+    let faces = face_ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::topology::ClosedShell::new(name, faces))
+}
+
+pub fn parse_open_shell(args: String) -> Result<crate::entities::topology::OpenShell, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let face_ids = parse_ref_ids(parts[1])?
+    let faces = face_ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::topology::OpenShell::new(name, faces))
+}
+
+pub fn parse_connected_face_set(args: String,) -> Result<crate::entities::topology::ConnectedFaceSet, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let face_ids = parse_ref_ids(parts[1])?
+    let faces = face_ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::topology::ConnectedFaceSet::new(name, faces))
+}
+
+pub fn parse_face_surface(args: String,) -> Result<crate::entities::topology::FaceSurface, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let bound_ids = parse_ref_ids(parts[1])?
+    let bounds = bound_ids.map(|id| { crate::ids::Ref { id: id } })
+    let geom_id = parse_ref_int(parts[2])?
+    let ss_str = parts[3].trim()
+    let same_sense = if ss_str == ".T." {
+        true
+    } else if ss_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    Ok(crate::entities::topology::FaceSurface::new(
+        name
+        bounds
+        crate::ids::Ref { id: geom_id, }
+        same_sense
+    ))
+}
+
+pub fn parse_subface(args: String) -> Result<crate::entities::topology::Subface, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let bound_ids = parse_ref_ids(parts[1])?
+    let bounds = bound_ids.map(|id| { crate::ids::Ref { id: id } })
+    let parent_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::topology::Subface::new(name, bounds, crate::ids::Ref { id: parent_id, }))
+}
+
+pub fn parse_shape_aspect(args: String,) -> Result<crate::entities::product::ShapeAspect, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let desc = strip_quotes(parts[1])
+    let shape_id = parse_ref_int(parts[2])?
+    let definitional = parts[3].trim()
+    Ok(crate::entities::product::ShapeAspect::new(
+        name
+        desc
+        crate::ids::Ref { id: shape_id, }
+        definitional
+    ))
+}
+
+pub fn parse_shell_based_surface_model(args: String,) -> Result<crate::entities::topology::ShellBasedSurfaceModel, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let bound_ids = parse_ref_ids(parts[1])?
+    let bounds = bound_ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::topology::ShellBasedSurfaceModel::new(name, bounds))
+}
+
+pub fn parse_advanced_face(args: String,) -> Result<crate::entities::topology::AdvancedFace, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let bound_ids = parse_ref_ids(parts[1])?
+    let bounds = bound_ids.map(|id| { crate::ids::Ref { id: id } })
+    let surface_id = parse_ref_int(parts[2])?
+    let ss = parts[3].trim()
+    let same_sense = if ss == ".T." {
+        true
+    } else if ss == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    Ok(crate::entities::topology::AdvancedFace::new(
+        name
+        bounds
+        crate::ids::Ref { id: surface_id, }
+        same_sense
+    ))
+}
+
+pub fn parse_face_outer_bound(args: String,) -> Result<crate::entities::topology::FaceOuterBound, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let bound_id = parse_ref_int(parts[1])?
+    let ori_str = parts[2].trim()
+    let orientation = if ori_str == ".T." {
+        true
+    } else if ori_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    Ok(crate::entities::topology::FaceOuterBound::new(name, crate::ids::Ref { id: bound_id, }, orientation))
+}
+
+pub fn parse_face_bound(args: String) -> Result<crate::entities::topology::FaceBound, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let bound_id = parse_ref_int(parts[1])?
+    let ori_str = parts[2].trim()
+    let orientation = if ori_str == ".T." {
+        true
+    } else if ori_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    Ok(crate::entities::topology::FaceBound::new(name, crate::ids::Ref { id: bound_id, }, orientation))
+}
+
+pub fn parse_edge_loop(args: String) -> Result<crate::entities::topology::EdgeLoop, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let edge_ids = parse_ref_ids(parts[1])?
+    let edges = edge_ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::topology::EdgeLoop::new(name, edges))
+}
+
+pub fn parse_oriented_edge(args: String,) -> Result<crate::entities::topology::OrientedEdge, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 5 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let edge_start = parts[1].trim()
+    let edge_end = parts[2].trim()
+    let edge_element_id = parse_ref_int(parts[3])?
+    let ori_str = parts[4].trim()
+    let orientation = if ori_str == ".T." {
+        true
+    } else if ori_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    Ok(crate::entities::topology::OrientedEdge::new(
+        name
+        edge_start
+        edge_end
+        crate::ids::Ref { id: edge_element_id, }
+        orientation
+    ))
+}
+
+pub fn parse_edge_curve(args: String) -> Result<crate::entities::topology::EdgeCurve, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 5 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let start_id = parse_ref_int(parts[1])?
+    let end_id = parse_ref_int(parts[2])?
+    let geom_id = parse_ref_int(parts[3])?
+    let ss_str = parts[4].trim()
+    let same_sense = if ss_str == ".T." {
+        true
+    } else if ss_str == ".F." {
+        false
+    } else {
+        return fail_parse()
+    }
+    Ok(crate::entities::topology::EdgeCurve::new(
+        name
+        crate::ids::Ref { id: start_id, }
+        crate::ids::Ref { id: end_id, }
+        crate::ids::Ref { id: geom_id, }
+        same_sense
+    ))
+}
+
+pub fn parse_vertex_point(args: String,) -> Result<crate::entities::topology::VertexPoint, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let geom_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::topology::VertexPoint::new(name, crate::ids::Ref { id: geom_id, }))
+}
+
+pub fn parse_color_rgb(args: String,) -> Result<crate::entities::presentation::ColorRgb, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let r = parse_double(parts[1])?
+    let g = parse_double(parts[2])?
+    let b = parse_double(parts[3])?
+    Ok(crate::entities::presentation::ColorRgb::new(name, r, g, b))
+}
+
+pub fn parse_draughting_pre_defined_color(args: String,) -> Result<crate::entities::presentation::DraughtingPreDefinedColour, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    Ok(crate::entities::presentation::DraughtingPreDefinedColour::new(name))
+}
+
+pub fn parse_ref_ids(arg: String) -> Result<Vec<EntityId>, ParseErrorInfo> {
+    let mut out = #[]
+    for p in split_args(arg) {
+        out.push(parse_ref_int(p)?)
+    }
+    Ok(out)
+}
+
+pub fn parse_surface_side(s: String) -> Result<String, ParseErrorInfo> {
+    let t = s.trim()
+    Ok(match t {
+        ".BOTH." | ".POSITIVE." | ".NEGATIVE." => t
+        _ => return fail_parse()
+    })
+}
+
+pub fn parse_fill_area_style_color(args: String,) -> Result<crate::entities::presentation::FillAreaStyleColor, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let color_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::presentation::FillAreaStyleColor::new(name, crate::ids::Ref { id: color_id, }))
+}
+
+pub fn parse_fill_area_style(args: String,) -> Result<crate::entities::presentation::FillAreaStyle, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let style_ids = parse_ref_ids(parts[1])?
+    let styles = style_ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::presentation::FillAreaStyle::new(name, styles))
+}
+
+pub fn parse_surface_style_fill_area(args: String,) -> Result<crate::entities::presentation::SurfaceStyleFillArea, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let fa_id = parse_ref_int(parts[0])?
+    Ok(crate::entities::presentation::SurfaceStyleFillArea::new(crate::ids::Ref { id: fa_id, }))
+}
+
+pub fn parse_surface_side_style(args: String,) -> Result<crate::entities::presentation::SurfaceSideStyle, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let style_ids = parse_ref_ids(parts[1])?
+    let styles = style_ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::presentation::SurfaceSideStyle::new(name, styles))
+}
+
+pub fn parse_surface_style_usage(args: String,) -> Result<crate::entities::presentation::SurfaceStyleUsage, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let side = parse_surface_side(parts[0])?
+    let style_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::presentation::SurfaceStyleUsage::new(side, crate::ids::Ref { id: style_id, }))
+}
+
+pub fn parse_presentation_style_assignment(args: String,) -> Result<crate::entities::presentation::PresentationStyleAssignment, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let style_ids = parse_ref_ids(parts[0])?
+    let styles = style_ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::presentation::PresentationStyleAssignment::new(styles))
+}
+
+pub fn parse_presentation_layer_assignment(args: String,) -> Result<crate::entities::presentation::PresentationLayerAssignment, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let description = strip_quotes(parts[1])
+    let item_ids = parse_ref_ids(parts[2])?
+    let items = item_ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::presentation::PresentationLayerAssignment::new(name, description, items))
+}
+
+pub fn parse_text_literal(args: String,) -> Result<crate::entities::presentation::TextLiteral, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 6 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let literal = strip_quotes(parts[1])
+    let placement_id = parse_ref_int(parts[2])?
+    let alignment = strip_quotes(parts[3])
+    let path_str = parts[4].trim()
+    let path = match crate::entities::presentation::TextPath::from_string(path_str) {
+        Some(p) => p
+        None => return fail_parse()
+    }
+    let font_id = parse_ref_int(parts[5])?
+    Ok(crate::entities::presentation::TextLiteral::new(
+        name
+        literal
+        crate::ids::Ref { id: placement_id, }
+        alignment
+        path
+        crate::ids::Ref { id: font_id, }
+    ))
+}
+
+pub fn parse_mechanical_design_geometric_presentation_representation(args: String,) -> Result<crate::entities::presentation::MechanicalDesignGeometricPresentationRepresentation, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let item_ids = parse_ref_ids(parts[1])?
+    let items = item_ids.map(|id| { crate::ids::Ref { id: id } })
+    let ctx_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::presentation::MechanicalDesignGeometricPresentationRepresentation::new(
+        name
+        items
+        crate::ids::Ref { id: ctx_id, }
+    ))
+}
+
+pub fn parse_styled_item(args: String,) -> Result<crate::entities::presentation::StyledItem, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let style_ids = parse_ref_ids(parts[1])?
+    let styles = style_ids.map(|id| { crate::ids::Ref { id: id } })
+    let item_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::presentation::StyledItem::new(name, styles, crate::ids::Ref { id: item_id, }))
+}
+
+pub fn parse_over_riding_styled_item(args: String,) -> Result<crate::entities::presentation::OverRidingStyledItem, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let style_ids = parse_ref_ids(parts[1])?
+    let styles = style_ids.map(|id| { crate::ids::Ref { id: id } })
+    let item_id = parse_ref_int(parts[2])?
+    let over_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::presentation::OverRidingStyledItem::new(
+        name
+        styles
+        crate::ids::Ref { id: item_id, }
+        crate::ids::Ref { id: over_id, }
+    ))
+}
+
+pub fn parse_hidden_element_over_riding_styled_item(args: String,) -> Result<crate::entities::presentation::HiddenElementOverRidingStyledItem, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let style_ids = parse_ref_ids(parts[1])?
+    let styles = style_ids.map(|id| { crate::ids::Ref { id: id } })
+    let item_id = parse_ref_int(parts[2])?
+    let over_id = parse_ref_int(parts[3])?
+    Ok(crate::entities::presentation::HiddenElementOverRidingStyledItem::new(
+        name
+        styles
+        crate::ids::Ref { id: item_id, }
+        crate::ids::Ref { id: over_id, }
+    ))
+}
+
+pub fn parse_annotation_occurrence(args: String,) -> Result<crate::entities::presentation::AnnotationOccurrence, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 3 {
+        return fail_parse()
+    }
+    let name = strip_quotes(parts[0])
+    let style_ids = parse_ref_ids(parts[1])?
+    let styles = style_ids.map(|id| { crate::ids::Ref { id: id } })
+    let item_id = parse_ref_int(parts[2])?
+    Ok(crate::entities::presentation::AnnotationOccurrence::new(name, styles, crate::ids::Ref {
+        id: item_id
+    }))
+}
+
+pub fn parse_dimensional_exponents(args: String,) -> Result<crate::entities::units::DimensionalExponents, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 7 {
+        return fail_parse()
+    }
+    Ok(crate::entities::units::DimensionalExponents::new(
+        parse_double(parts[0])?
+        parse_double(parts[1])?
+        parse_double(parts[2])?
+        parse_double(parts[3])?
+        parse_double(parts[4])?
+        parse_double(parts[5])?
+        parse_double(parts[6])?
+    ))
+}
+
+pub fn parse_length_measure_literal(arg: String) -> Result<String, ParseErrorInfo> {
+    let t = arg.trim()
+    if !t.starts_with("LENGTH_MEASURE(") {
+        return fail_parse()
+    }
+    if t.len() < 16 || !t.ends_with(")") {
+        return fail_parse()
+    }
+    // Inner literal (preserve scientific notation like `2.E-005`).
+    // "LENGTH_MEASURE(" is 15 chars; the opening paren is index 14.
+    Ok(substr(t, 15, t.len() - 1).trim())
+}
+
+pub fn parse_uncertainty_measure_with_unit(args: String,) -> Result<crate::entities::units::UncertaintyMeasureWithUnit, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 4 {
+        return fail_parse()
+    }
+    let length_measure_literal = parse_length_measure_literal(parts[0])?
+    let unit_id = parse_ref_int(parts[1])?
+    let name = strip_quotes(parts[2])
+    let description = strip_quotes(parts[3])
+    Ok(crate::entities::units::UncertaintyMeasureWithUnit::new(
+        length_measure_literal
+        crate::ids::Ref { id: unit_id, }
+        name
+        description
+    ))
+}
+
+pub fn parse_plane_angle_measure_literal(arg: String,) -> Result<String, ParseErrorInfo> {
+    let t = arg.trim()
+    if !t.starts_with("PLANE_ANGLE_MEASURE(") {
+        return fail_parse()
+    }
+    if t.len() < 22 || !t.ends_with(")") {
+        return fail_parse()
+    }
+    // Inner literal (preserve formatting).
+    // "PLANE_ANGLE_MEASURE(" is 20 chars.
+    Ok(substr(t, 20, t.len() - 1).trim())
+}
+
+pub fn parse_plane_angle_measure_with_unit(args: String,) -> Result<crate::entities::units::PlaneAngleMeasureWithUnit, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let plane_angle_measure_literal = parse_plane_angle_measure_literal(parts[0])?
+    let unit_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::units::PlaneAngleMeasureWithUnit::new(plane_angle_measure_literal, crate::ids::Ref {
+        id: unit_id
+    }))
+}
+
+pub fn parse_derived_unit_element(args: String,) -> Result<crate::entities::units::DerivedUnitElement, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let unit_id = parse_ref_int(parts[0])?
+    let exponent = parse_double(parts[1])?
+    Ok(crate::entities::units::DerivedUnitElement::new(crate::ids::Ref { id: unit_id, }, exponent))
+}
+
+pub fn parse_derived_unit(args: String) -> Result<crate::entities::units::DerivedUnit, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 1 {
+        return fail_parse()
+    }
+    let elem_ids = parse_ref_ids(parts[0])?
+    let elems = elem_ids.map(|id| { crate::ids::Ref { id: id } })
+    Ok(crate::entities::units::DerivedUnit::new(elems))
+}
+
+pub fn parse_measure_with_unit(args: String,) -> Result<crate::entities::units::MeasureWithUnit, ParseErrorInfo> {
+    let parts = split_args(args)
+    if parts.len() != 2 {
+        return fail_parse()
+    }
+    let val = parts[0].trim()
+    let unit_id = parse_ref_int(parts[1])?
+    Ok(crate::entities::units::MeasureWithUnit::new(val, crate::ids::Ref { id: unit_id, }))
+}

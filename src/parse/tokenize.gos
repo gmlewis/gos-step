@@ -1,0 +1,496 @@
+//! STEP DATA-section tokenizer.
+//!
+//! Statements are split on `;` outside string literals, rows are recognized as
+//! `#<id>=NAME(<args>)`, and argument lists are split depth- and string-aware.
+//! Positions are reported in UTF-16 code units, matching the reference
+//! implementation.
+
+use crate::error::{ParseErrorInfo, utf16_width}
+use crate::ids::EntityId
+
+/// One parsed DATA row.
+pub struct RawEntityRow {
+    pub id: EntityId
+    pub name: String
+    pub args: String
+    pub line: i64
+    pub col: i64
+}
+
+/// A statement plus the 1-based position where it begins.
+pub struct StatementSpan {
+    pub stmt: String
+    pub line: i64
+    pub col: i64
+}
+
+fn to_chars(s: String) -> Vec<char> {
+    let mut out = #[]
+    for c in s {
+        out.push(c)
+    }
+    out
+}
+
+fn chars_to_string(cs: Vec<char>) -> String {
+    let mut out = ""
+    for c in cs {
+        out += f"{c}"
+    }
+    out
+}
+
+fn slice_string(cs: Vec<char>, start: i64, end: i64) -> String {
+    let mut out = ""
+    let mut i = start
+    while i < end && i < cs.len() {
+        out += f"{cs[i]}"
+        i += 1
+    }
+    out
+}
+
+fn find_char(cs: Vec<char>, target: char) -> Option<i64> {
+    let mut i = 0
+    while i < cs.len() {
+        if cs[i] == target {
+            return Some(i)
+        }
+        i += 1
+    }
+    None
+}
+
+/// Remove STEP block comments (`/* ... */`), preserving newlines.
+///
+/// Comments are only removed outside STEP string literals. A single space is
+/// inserted where the comment started so adjacent tokens cannot merge.
+pub fn strip_step_comments(input: String) -> Result<String, ParseErrorInfo> {
+    let cs = to_chars(input)
+    let n = cs.len()
+    let mut out = ""
+    let mut in_str = false
+    let mut in_comment = false
+    let mut line: i64 = 1
+    let mut col: i64 = 1
+    let mut comment_line: i64 = 1
+    let mut comment_col: i64 = 1
+    let mut i: i64 = 0
+    while i < n {
+        let ci = cs[i]
+        if in_comment {
+            if ci == '*' && i + 1 < n && cs[i + 1] == '/' {
+                in_comment = false
+                i += 2
+                col += 2
+                continue
+            }
+            if ci == '\n' {
+                out += "\n"
+                line += 1
+                col = 1
+                i += 1
+                continue
+            }
+            col += 1
+            i += 1
+            continue
+        }
+        if in_str {
+            if ci == '\'' {
+                if i + 1 < n && cs[i + 1] == '\'' {
+                    // STEP string escaping: doubled quotes mean a literal '.
+                    out += "''"
+                    i += 2
+                    col += 2
+                    continue
+                } else {
+                    in_str = false
+                    out += "'"
+                    i += 1
+                    col += 1
+                    continue
+                }
+            }
+            out += f"{ci}"
+            i += 1
+            if ci == '\n' {
+                line += 1
+                col = 1
+            } else {
+                col += utf16_width(ci)
+            }
+            continue
+        }
+
+        // Outside strings.
+        if ci == '\'' {
+            in_str = true
+            out += "'"
+            i += 1
+            col += 1
+            continue
+        }
+        if ci == '/' && i + 1 < n && cs[i + 1] == '*' {
+            // Start comment.
+            out += " "
+            in_comment = true
+            comment_line = line
+            comment_col = col
+            i += 2
+            col += 2
+            continue
+        }
+        out += f"{ci}"
+        i += 1
+        if ci == '\n' {
+            line += 1
+            col = 1
+        } else {
+            col += utf16_width(ci)
+        }
+    }
+    if in_comment {
+        return Err(
+            ParseErrorInfo::new("unterminated STEP block comment (missing '*/')")
+                .at(comment_line, comment_col, "/*")
+        )
+    }
+    Ok(out)
+}
+
+/// Parse a decimal integer the reference way: optional `-`, every digit is
+/// accumulated, all other characters are ignored, and there is no overflow
+/// check.
+pub fn parse_int_dec(s: String) -> i64 {
+    let t = to_chars(s.trim())
+    let mut sign: i64 = 1
+    let mut start_i: i64 = 0
+    if t.len() > 0 && t[0] == '-' {
+        sign = -1
+        start_i = 1
+    }
+    let mut acc: i64 = 0
+    let mut i = start_i
+    while i < t.len() {
+        let ci = t[i]
+        if ci >= '0' && ci <= '9' {
+            acc = acc * 10 + (ci as i64 - '0' as i64)
+        }
+        i += 1
+    }
+    acc * sign
+}
+
+/// Split the DATA section into individual entity statements.
+///
+/// This is intentionally minimal: it splits on `;` only outside `'...'`
+/// literals, keeps no parenthesis tracking (a reference quirk), and drops empty
+/// statements.
+pub fn split_statements(data_section: String) -> Vec<String> {
+    let cs = to_chars(data_section)
+    let mut out = #[]
+    let mut in_str = false
+    let mut builder = ""
+    let n = cs.len()
+    let mut i: i64 = 0
+    while i < n {
+        let ci = cs[i]
+        if ci == '\'' {
+            if in_str {
+                if i + 1 < n && cs[i + 1] == '\'' {
+                    builder += "''"
+                    i += 2
+                    continue
+                }
+                in_str = false
+                builder += "'"
+                i += 1
+                continue
+            }
+            in_str = true
+            builder += "'"
+            i += 1
+            continue
+        }
+        if !in_str && ci == ';' {
+            let stmt = builder.trim()
+            if stmt.len() > 0 {
+                out.push(stmt)
+            }
+            builder = ""
+            i += 1
+            continue
+        }
+        builder += f"{ci}"
+        i += 1
+    }
+
+    // Trailing statement when there is no final ';'.
+    let trailing = builder.trim()
+    if trailing.len() > 0 {
+        out.push(trailing)
+    }
+    out
+}
+
+/// Like `split_statements`, but also returns the 1-based position where each
+/// statement begins.
+pub fn split_statements_with_pos(
+    data_section: String
+) -> Result<Vec<StatementSpan>, ParseErrorInfo> {
+    let cs = to_chars(data_section)
+    let mut out = #[]
+    let mut in_str = false
+    let mut builder = ""
+    let mut line: i64 = 1
+    let mut col: i64 = 1
+    let mut stmt_line: i64 = 1
+    let mut stmt_col: i64 = 1
+    let mut str_line: i64 = 1
+    let mut str_col: i64 = 1
+    let mut seen_non_ws = false
+    let n = cs.len()
+    let mut i: i64 = 0
+    while i < n {
+        let ci = cs[i]
+
+        // Skip leading whitespace outside strings.
+        if !in_str && !seen_non_ws {
+            if ci == ' ' || ci == '\t' || ci == '\n' || ci == '\r' {
+                if ci == '\n' {
+                    line += 1
+                    col = 1
+                } else {
+                    col += 1
+                }
+                i += 1
+                continue
+            }
+            // The first non-whitespace character starts a statement.
+            seen_non_ws = true
+            stmt_line = line
+            stmt_col = col
+        }
+        if ci == '\'' {
+            if in_str {
+                if i + 1 < n && cs[i + 1] == '\'' {
+                    builder += "''"
+                    i += 2
+                    col += 2
+                    continue
+                }
+                in_str = false
+                builder += "'"
+                i += 1
+                col += 1
+                continue
+            }
+            in_str = true
+            str_line = line
+            str_col = col
+            builder += "'"
+            i += 1
+            col += 1
+            continue
+        }
+        if !in_str && ci == ';' {
+            let stmt = builder.trim()
+            if stmt.len() > 0 {
+                out.push(StatementSpan {
+                    stmt: stmt
+                    line: stmt_line
+                    col: stmt_col
+                })
+            }
+            builder = ""
+            seen_non_ws = false
+            i += 1
+            col += 1
+            continue
+        }
+        builder += f"{ci}"
+        if ci == '\n' {
+            line += 1
+            col = 1
+        } else {
+            col += utf16_width(ci)
+        }
+        i += 1
+    }
+    let trailing = builder.trim()
+    if trailing.len() > 0 {
+        out.push(StatementSpan {
+            stmt: trailing
+            line: stmt_line
+            col: stmt_col
+        })
+    }
+    if in_str {
+        return Err(
+            ParseErrorInfo::new("unterminated STEP string literal (missing closing '\\'')")
+                .at(str_line, str_col, builder)
+        )
+    }
+    Ok(out)
+}
+
+fn apply_base(line: i64, col: i64, base_line: i64, base_col: i64) -> (i64, i64) {
+    if line == 1 {
+        (base_line, base_col + col - 1)
+    } else {
+        (base_line + line - 1, col)
+    }
+}
+
+/// Parse one statement into a row.
+pub fn parse_row(span: StatementSpan) -> Result<RawEntityRow, ParseErrorInfo> {
+    let stmt = span.stmt
+    let cs = to_chars(stmt)
+    // Expected form: #<id>=<NAME>(<args>)
+    let eq_idx = match find_char(cs, '=') {
+        Some(i) => i
+        None => {
+            return Err(
+                ParseErrorInfo::new("invalid DATA statement (missing '=')")
+                    .at(span.line, span.col, stmt)
+            )
+        }
+    }
+    let id_part = slice_string(cs, 0, eq_idx).trim()
+    let id_cs = to_chars(id_part)
+    if id_cs.len() < 2 || id_cs[0] != '#' {
+        return Err(
+            ParseErrorInfo::new("invalid entity id (expected '#<int>')")
+                .at(span.line, span.col, stmt)
+        )
+    }
+    let id_digits = slice_string(id_cs, 1, id_cs.len())
+    let id_val = parse_int_dec(id_digits)
+    let id = EntityId::new(id_val)
+    let rhs = slice_string(cs, eq_idx + 1, cs.len()).trim()
+    let rhs_cs = to_chars(rhs)
+
+    // Complex entity instance: #<id>=( <ENTITY1> ... <ENTITYN> );
+    if rhs_cs.len() > 0 && rhs_cs[0] == '(' {
+        return Ok(RawEntityRow {
+            id: id
+            name: "__COMPLEX__"
+            args: rhs
+            line: span.line
+            col: span.col
+        })
+    }
+    let lp_idx = match find_char(rhs_cs, '(') {
+        Some(i) => i
+        None => {
+            return Err(
+                ParseErrorInfo::new("invalid DATA statement (missing '(')")
+                    .at(span.line, span.col, stmt)
+            )
+        }
+    }
+    let name = slice_string(rhs_cs, 0, lp_idx).trim()
+    let args = slice_string(rhs_cs, lp_idx, rhs_cs.len()).trim()
+    Ok(RawEntityRow {
+        id: id
+        name: name
+        args: args
+        line: span.line
+        col: span.col
+    })
+}
+
+/// Tokenize a DATA section whose first character is at line/col 1/1.
+pub fn tokenize_step_data_section(
+    data_section: String
+) -> Result<Vec<RawEntityRow>, ParseErrorInfo> {
+    tokenize_step_data_section_with_base(data_section, 1, 1)
+}
+
+/// Tokenize the DATA section, reporting positions relative to the full file.
+pub fn tokenize_step_data_section_with_base(
+    data_section: String
+    base_line: i64
+    base_col: i64
+) -> Result<Vec<RawEntityRow>, ParseErrorInfo> {
+    let stmts = match split_statements_with_pos(data_section) {
+        Ok(v) => v
+        Err(info) => {
+            let l, c = match (info.line, info.col) {
+                (Some(il), Some(ic)) => apply_base(il, ic, base_line, base_col)
+                _ => (base_line, base_col)
+            }
+            return Err(ParseErrorInfo {
+                message: info.message
+                line: Some(l)
+                col: Some(c)
+                stmt: info.stmt
+            })
+        }
+    }
+    let mut rows = #[]
+    for span in stmts {
+        let abs_line, abs_col = apply_base(span.line, span.col, base_line, base_col)
+        let row = parse_row(StatementSpan {
+            stmt: span.stmt
+            line: abs_line
+            col: abs_col
+        })?
+        rows.push(row)
+    }
+    Ok(rows)
+}
+
+/// Split a comma-separated argument list, respecting parentheses and strings.
+/// The input may include surrounding parentheses, and they are dropped.
+pub fn split_args(args: String) -> Vec<String> {
+    let s = to_chars(args.trim())
+    let mut inner_start: i64 = 0
+    let mut inner_end: i64 = s.len()
+    if inner_end >= 2 && s[0] == '(' && s[inner_end - 1] == ')' {
+        inner_start = 1
+        inner_end -= 1
+    }
+    let mut out = #[]
+    let mut depth: i64 = 0
+    let mut in_str = false
+    let mut skip_quote = false
+    let mut start = inner_start
+    let mut i = inner_start
+    while i < inner_end {
+        let ci = s[i]
+        if ci == '\'' {
+            if skip_quote {
+                skip_quote = false
+            } else if in_str {
+                if i + 1 < inner_end && s[i + 1] == '\'' {
+                    skip_quote = true
+                } else {
+                    in_str = false
+                }
+            } else {
+                in_str = true
+            }
+        } else if !in_str {
+            if ci == '(' {
+                depth += 1
+            } else if ci == ')' {
+                if depth > 0 {
+                    depth -= 1
+                }
+            } else if ci == ',' && depth == 0 {
+                out.push(slice_string(s, start, i).trim())
+                start = i + 1
+            }
+        }
+        i += 1
+    }
+    if start <= inner_end {
+        let part = slice_string(s, start, inner_end).trim()
+        if part.len() > 0 {
+            out.push(part)
+        }
+    }
+    out
+}

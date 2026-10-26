@@ -1,0 +1,47 @@
+//! ID and reference types.
+//!
+//! `EntityId` keeps entity numbers from being confused with ordinary
+//! integers. `Ref` is a reference to another entity.
+
+/// A distinct type for entity IDs.
+pub struct EntityId {
+    pub value: i64
+}
+
+impl EntityId {
+    pub fn new(value: i64) -> EntityId {
+        EntityId { value: value }
+    }
+
+    pub fn zero() -> EntityId {
+        EntityId { value: 0 }
+    }
+}
+
+impl Display for EntityId {
+    fn fmt(&self) -> String {
+        f"#{self.value}"
+    }
+}
+
+/// A reference to another entity, holding its ID.
+pub struct Ref {
+    pub id: EntityId
+}
+
+impl Ref {
+    pub fn new(value: i64) -> Ref {
+        Ref { id: EntityId::new(value) }
+    }
+
+    /// The STEP spelling of a reference: `#123`.
+    pub fn to_step(self) -> String {
+        f"#{self.id.value}"
+    }
+}
+
+impl Display for Ref {
+    fn fmt(&self) -> String {
+        f"#{self.id.value}"
+    }
+}

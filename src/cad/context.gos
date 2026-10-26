@@ -1,0 +1,376 @@
+//! `StepContext` owns a repository plus deduplication caches, so repeated
+//! geometric primitives are emitted once and IDs stay stable.
+
+use crate::cad::geometry::Vec2
+use crate::cad::types::{Profile2D, Shape}
+use crate::entities::{context as ctx_entities, geometry, product, topology, units}
+use crate::fmt::{fmt_double, fmt_num, snap_double}
+use crate::ids::{EntityId, Ref}
+use crate::repository::{AnyEntity, Repository}
+
+/// The shared build context for STEP compilation.
+pub struct StepContext {
+    pub repo: Repository
+    pub length_unit_id: EntityId
+    pub plane_angle_unit_id: EntityId
+    pub solid_angle_unit_id: EntityId
+    pub uncertainty_id: EntityId
+    pub repo_ctx_id: EntityId
+    pub snapping: Option<f64>
+
+    pub directions: Map<String, Ref>
+    pub vectors: Map<String, Ref>
+    pub cartesian_points: Map<String, Ref>
+    pub vertex_points: Map<i64, Ref>
+    pub lines: Map<String, Ref>
+    pub edge_curves: Map<String, Ref>
+    pub axis2_placements: Map<String, Ref>
+    pub oriented_edges: Map<String, Ref>
+    pub edge_loops: Map<String, Ref>
+    pub face_bounds: Map<String, Ref>
+    pub advanced_faces: Map<String, Ref>
+}
+
+impl StepContext {
+    pub fn new(snapping: Option<f64> = None) -> StepContext {
+        StepContext {
+            repo: Repository::new()
+            length_unit_id: EntityId::zero()
+            plane_angle_unit_id: EntityId::zero()
+            solid_angle_unit_id: EntityId::zero()
+            uncertainty_id: EntityId::zero()
+            repo_ctx_id: EntityId::zero()
+            snapping: snapping
+            directions: Map::new()
+            vectors: Map::new()
+            cartesian_points: Map::new()
+            vertex_points: Map::new()
+            lines: Map::new()
+            edge_curves: Map::new()
+            axis2_placements: Map::new()
+            oriented_edges: Map::new()
+            edge_loops: Map::new()
+            face_bounds: Map::new()
+            advanced_faces: Map::new()
+        }
+    }
+
+    pub fn add(&mut self, entity: AnyEntity) -> Ref {
+        let id = self.repo.add_mut(entity)
+        Ref { id: id }
+    }
+
+    /// A deduplicated `DIRECTION` after clearing near-zero components.
+    pub fn direction(&mut self, x: f64, y: f64, z: f64) -> Ref {
+        // Direction cosines define plane normals and line directions. Grid
+        // snapping them tilts a PLANE away from its boundary, so only residue
+        // is cleared and deduplication uses the exact value.
+        let nx = clear_residue(x)
+        let ny = clear_residue(y)
+        let nz = clear_residue(z)
+        let key = f"DIR:{fmt_num(nx)},{fmt_num(ny)},{fmt_num(nz)}"
+        match self.directions.get(key) {
+            Some(r) => r
+            None => {
+                let r = self.add(crate::repository::any_entity_direction(geometry::Direction::new(
+                    ""
+                    #[nx, ny, nz]
+                )))
+                self.directions.insert(key, r)
+                r
+            }
+        }
+    }
+
+    /// A deduplicated `VECTOR`.
+    pub fn vector(&mut self, dir: Ref, magnitude: f64) -> Ref {
+        let smag = snap_double(magnitude, self.snapping)
+        let key = f"VEC:{dir.id.value},{fmt_double(smag, self.snapping)}"
+        match self.vectors.get(key) {
+            Some(r) => r
+            None => {
+                let r = self.add(crate::repository::any_entity_vector(geometry::Vector::new(
+                    "", dir, smag
+                )))
+                self.vectors.insert(key, r)
+                r
+            }
+        }
+    }
+
+    /// A deduplicated `CARTESIAN_POINT` after snapping.
+    pub fn cartesian_point(&mut self, x: f64, y: f64, z: f64) -> Ref {
+        let sx = snap_double(x, self.snapping)
+        let sy = snap_double(y, self.snapping)
+        let sz = snap_double(z, self.snapping)
+        let key = f"PNT:{fmt_double(sx, self.snapping)},{fmt_double(sy, self.snapping)},{fmt_double(sz, self.snapping)}"
+        match self.cartesian_points.get(key) {
+            Some(r) => r
+            None => {
+                let r = self.add(crate::repository::any_entity_cartesian_point(
+                    geometry::CartesianPoint::new("", #[sx, sy, sz])
+                ))
+                self.cartesian_points.insert(key, r)
+                r
+            }
+        }
+    }
+
+    pub fn axis2_placement_3d(&mut self, origin: Ref, axis: Ref, ref_direction: Ref) -> Ref {
+        let key = f"{origin.id.value},{axis.id.value},{ref_direction.id.value}"
+        match self.axis2_placements.get(key) {
+            Some(r) => r
+            None => {
+                let a2p = geometry::Axis2Placement3D::new("", origin, axis, ref_direction)
+                let r = self.add(crate::repository::any_entity_axis2_placement_3d(a2p))
+                self.axis2_placements.insert(key, r)
+                r
+            }
+        }
+    }
+
+    pub fn oriented_edge(&mut self, edge_element: Ref, orientation: bool) -> Ref {
+        let key = f"{edge_element.id.value},{orientation}"
+        match self.oriented_edges.get(key) {
+            Some(r) => r
+            None => {
+                let oe = topology::OrientedEdge::new("", "*", "*", edge_element, orientation)
+                let r = self.add(crate::repository::any_entity_oriented_edge(oe))
+                self.oriented_edges.insert(key, r)
+                r
+            }
+        }
+    }
+
+    pub fn edge_loop(&mut self, edge_list: Vec<Ref>) -> Ref {
+        let mut ids = #[]
+        for r in edge_list {
+            ids.push(f"{r.id.value}")
+        }
+        let key = ids.join(",")
+        match self.edge_loops.get(key) {
+            Some(r) => r
+            None => {
+                let el = topology::EdgeLoop::new("", edge_list)
+                let r = self.add(crate::repository::any_entity_edge_loop(el))
+                self.edge_loops.insert(key, r)
+                r
+            }
+        }
+    }
+
+    pub fn face_bound(&mut self, bound: Ref, orientation: bool) -> Ref {
+        let key = f"{bound.id.value},{orientation}"
+        match self.face_bounds.get(key) {
+            Some(r) => r
+            None => {
+                let fb = topology::FaceBound::new("", bound, orientation)
+                let r = self.add(crate::repository::any_entity_face_bound(fb))
+                self.face_bounds.insert(key, r)
+                r
+            }
+        }
+    }
+
+    pub fn face_outer_bound(&mut self, bound: Ref, orientation: bool) -> Ref {
+        let key = f"OUTER:{bound.id.value},{orientation}"
+        match self.face_bounds.get(key) {
+            Some(r) => r
+            None => {
+                let fob = topology::FaceOuterBound::new("", bound, orientation)
+                let r = self.add(crate::repository::any_entity_face_outer_bound(fob))
+                self.face_bounds.insert(key, r)
+                r
+            }
+        }
+    }
+
+    pub fn advanced_face(&mut self, bounds: Vec<Ref>, face_geometry: Ref, same_sense: bool) -> Ref {
+        let mut bound_ids = #[]
+        for r in bounds {
+            bound_ids.push(f"{r.id.value}")
+        }
+        let bounds_key = bound_ids.join(",")
+        let key = f"{face_geometry.id.value},{same_sense}:{bounds_key}"
+        match self.advanced_faces.get(key) {
+            Some(r) => r
+            None => {
+                let af = topology::AdvancedFace::new("", bounds, face_geometry, same_sense)
+                let r = self.add(crate::repository::any_entity_advanced_face(af))
+                self.advanced_faces.insert(key, r)
+                r
+            }
+        }
+    }
+
+    pub fn vertex_point(&mut self, cp_ref: Ref) -> Ref {
+        match self.vertex_points.get(cp_ref.id.value) {
+            Some(r) => r
+            None => {
+                let vp = topology::VertexPoint::new("", cp_ref)
+                let r = self.add(crate::repository::any_entity_vertex_point(vp))
+                self.vertex_points.insert(cp_ref.id.value, r)
+                r
+            }
+        }
+    }
+
+    pub fn line(&mut self, pnt: Ref, dir: Ref) -> Ref {
+        let key = f"{pnt.id.value},{dir.id.value}"
+        match self.lines.get(key) {
+            Some(r) => r
+            None => {
+                let line = geometry::Line::new("", pnt, dir)
+                let r = self.add(crate::repository::any_entity_line(line))
+                self.lines.insert(key, r)
+                r
+            }
+        }
+    }
+
+    pub fn edge_curve(&mut self, start: Ref, end: Ref, curve: Ref, same_sense: bool) -> Ref {
+        let key = f"{start.id.value},{end.id.value},{curve.id.value},{same_sense}"
+        match self.edge_curves.get(key) {
+            Some(r) => r
+            None => {
+                let ec = topology::EdgeCurve::new("", start, end, curve, same_sense)
+                let r = self.add(crate::repository::any_entity_edge_curve(ec))
+                self.edge_curves.insert(key, r)
+                r
+            }
+        }
+    }
+
+    /// Initialize the standard units and representation context.
+    pub fn init_standard_context(&mut self, name: String) {
+        let dim_exp = units::DimensionalExponents::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        let dim_exp_id = self
+            .add(crate::repository::any_entity_dimensional_exponents(dim_exp))
+            .id
+
+        // Radian.
+        let cx_radian = ctx_entities::ComplexInstance::new(#[
+            ctx_entities::ComplexPart::NamedUnit(units::NamedUnit::new("*"))
+            ctx_entities::ComplexPart::PlaneAngleUnit(units::PlaneAngleUnit::new())
+            ctx_entities::ComplexPart::SiUnit(units::SiUnit::new("$", ".RADIAN."))
+        ])
+        let radian_ref = self.add(crate::repository::any_entity_complex_instance(cx_radian))
+
+        // Degree.
+        let pa_meas = units::PlaneAngleMeasureWithUnit::new("0.0174532925", radian_ref)
+        let pa_meas_ref = self.add(
+            crate::repository::any_entity_plane_angle_measure_with_unit(pa_meas)
+        )
+        let cx_degree = ctx_entities::ComplexInstance::new(#[
+            ctx_entities::ComplexPart::ConversionBasedUnit(units::ConversionBasedUnit::new(
+                "DEGREE", pa_meas_ref
+            ))
+            ctx_entities::ComplexPart::NamedUnit(units::NamedUnit::new(f"#{dim_exp_id.value}"))
+            ctx_entities::ComplexPart::PlaneAngleUnit(units::PlaneAngleUnit::new())
+        ])
+        self.plane_angle_unit_id = self
+            .add(crate::repository::any_entity_complex_instance(cx_degree))
+            .id
+
+        // Steradian.
+        let cx_steradian = ctx_entities::ComplexInstance::new(#[
+            ctx_entities::ComplexPart::NamedUnit(units::NamedUnit::new("*"))
+            ctx_entities::ComplexPart::SiUnit(units::SiUnit::new("$", ".STERADIAN."))
+            ctx_entities::ComplexPart::SolidAngleUnit(units::SolidAngleUnit::new())
+        ])
+        self.solid_angle_unit_id = self
+            .add(crate::repository::any_entity_complex_instance(cx_steradian))
+            .id
+
+        // Millimetre.
+        let cx_mm = ctx_entities::ComplexInstance::new(#[
+            ctx_entities::ComplexPart::LengthUnit(units::LengthUnit::new())
+            ctx_entities::ComplexPart::NamedUnit(units::NamedUnit::new("*"))
+            ctx_entities::ComplexPart::SiUnit(units::SiUnit::new(".MILLI.", ".METRE."))
+        ])
+        let mm_ref = self.add(crate::repository::any_entity_complex_instance(cx_mm))
+        self.length_unit_id = mm_ref.id
+
+        // Uncertainty.
+        let unc_val = match self.snapping {
+            None => 2.0e-5
+            Some(eps) => eps * 2.0
+        }
+        let unc_str = fmt_double(unc_val, self.snapping)
+        let unc = units::UncertaintyMeasureWithUnit::new(
+            unc_str
+            mm_ref
+            "DISTANCE_ACCURACY_VALUE"
+            "Maximum Tolerance applied to model"
+        )
+        self.uncertainty_id = self
+            .add(crate::repository::any_entity_uncertainty_measure_with_unit(unc))
+            .id
+
+        // Global context.
+        let cx_ctx = ctx_entities::ComplexInstance::new(#[
+            ctx_entities::ComplexPart::GeomRepCtx(
+                ctx_entities::GeometricRepresentationContext::new(3)
+            )
+            ctx_entities::ComplexPart::GlobUncCtx(
+                ctx_entities::GlobalUncertaintyAssignedContext::new(#[self.uncertainty_id])
+            )
+            ctx_entities::ComplexPart::GlobUnitCtx(
+                ctx_entities::GlobalUnitAssignedContext::new(#[
+                    self.length_unit_id
+                    self.plane_angle_unit_id
+                    self.solid_angle_unit_id
+                ])
+            )
+            ctx_entities::ComplexPart::RepCtx(ctx_entities::RepresentationContext::new(
+                name
+                "TOP_LEVEL_ASSEMBLY_PART"
+            ))
+        ])
+        self.repo_ctx_id = self
+            .add(crate::repository::any_entity_complex_instance(cx_ctx))
+            .id
+    }
+
+    /// Add the product structure for a part and return the definition ref.
+    pub fn add_product_definition(&mut self, name: String) -> Ref {
+        let app_ctx = product::ApplicationContext::new(
+            "core data for automotive mechanical design processes"
+        )
+        let app_ctx_ref = self.add(crate::repository::any_entity_application_context(app_ctx))
+        let app_proto = product::ApplicationProtocolDefinition::new(
+            "international standard"
+            "automotive_design"
+            2010
+            app_ctx_ref
+        )
+        let _ = self.add(crate::repository::any_entity_application_protocol_definition(app_proto))
+        let prod_ctx = product::ProductContext::new(" ", app_ctx_ref, "mechanical")
+        let prod_ctx_ref = self.add(crate::repository::any_entity_product_context(prod_ctx))
+        let product_entity = product::Product::new(name, name, " ", #[prod_ctx_ref])
+        let product_ref = self.add(crate::repository::any_entity_product(product_entity))
+        let cat = product::ProductRelatedProductCategory::new("part", "", #[product_ref])
+        let _ = self.add(crate::repository::any_entity_product_related_product_category(cat))
+        let form = product::ProductDefinitionFormationWithSpecifiedSource::new(
+            " ", " ", product_ref, ".NOT_KNOWN."
+        )
+        let form_ref = self.add(
+            crate::repository::any_entity_product_definition_formation_with_specified_source(form)
+        )
+        let def_ctx = product::ProductDefinitionContext::new(
+            "part definition"
+            app_ctx_ref
+            "design"
+        )
+        let def_ctx_ref = self.add(crate::repository::any_entity_product_definition_context(def_ctx))
+        let prod_def = product::ProductDefinition::new(" ", "", form_ref, def_ctx_ref)
+        self.add(crate::repository::any_entity_product_definition(prod_def))
+    }
+}
+
+fn clear_residue(v: f64) -> f64 {
+    if crate::fmt::near_zero_double(v) == 0.0 { 0.0 } else { v }
+}
+
+// Keep the shape/profile imports referenced for the compiler modules.
+pub fn _context_type_markers(_p: Profile2D, _s: Shape, _v: Vec2, _w: Vec3) {}

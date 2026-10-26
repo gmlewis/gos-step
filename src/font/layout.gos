@@ -1,0 +1,163 @@
+//! Text layout: `Font::gen_path` and the alignment options it supports.
+//!
+//! `gen_path` walks a string left to right, translating each glyph's SVG path
+//! by the running pen position and concatenating the results into one
+//! "super-glyph". Missing characters advance by the font's default width;
+//! `\n` advances a line and returns to the left margin, while `\r` advances a
+//! line only.
+//!
+//! Font paths store positive Y as "up". `y_up = false` (the SVG canvas
+//! convention) negates Y while translating so the result reads correctly on a
+//! screen; `y_up = true` keeps the font's native orientation for 3D CAD.
+
+use std::bytes::Builder
+
+use crate::font::model::{Font, FontError, Glyph}
+use crate::font::svg::translate_path
+
+/// Where the origin of the generated path sits relative to the text.
+///
+/// The names describe Y first (`TopLeft`), but `RatioXY(x, y)` lists X first.
+pub enum Alignment {
+    /// Leave the path untranslated.
+    Unchanged
+    TopLeft
+    TopCenter
+    TopRight
+    CenterLeft
+    Center
+    CenterRight
+    BaselineLeft
+    BaselineCenter
+    BaselineRight
+    BottomLeft
+    BottomCenter
+    BottomRight
+    /// Place the origin a fraction (`0..1`) across the path's bounding box.
+    RatioXY(f64, f64)
+}
+
+/// Linear interpolation used by `RatioXY`.
+fn mix(a: f64, b: f64, t: f64) -> f64 {
+    (1.0 - t) * a + t * b
+}
+
+impl Font {
+    /// Render `text` into a single glyph whose path is the concatenation of
+    /// every source glyph, translated and aligned as requested.
+    ///
+    /// The returned glyph's `horiz_adv_x` is zero (a super-glyph has no single
+    /// advance) and its bounding box has already been shifted by the alignment
+    /// offset, exactly like the reference implementation.
+    pub fn gen_path(
+        self
+        text: String
+        alignment: Alignment = Alignment::Unchanged
+        y_up: bool = false
+    ) -> Result<Glyph, FontError> {
+        let mut xmin = 0.0
+        let mut ymin = 0.0
+        let mut xmax = 0.0
+        let mut ymax = 0.0
+        let mut x = 0.0
+        let mut y = 0.0
+        let y_scale = if y_up { 1.0 } else { -1.0 }
+        let mut chars = Builder::new()
+        let mut gerbers = Builder::new()
+        let mut path = Builder::new()
+        let mut first = true
+
+        for c in text.chars() {
+            let key = f"{c}"
+            match self.glyphs.get(key) {
+                Some(glyph) => {
+                    chars.write(glyph.char)
+                    gerbers.write(glyph.gerber_lp)
+                    let glyph_ymin = if y_scale < 0.0 { -glyph.ymax } else { glyph.ymin }
+                    let glyph_ymax = if y_scale < 0.0 { -glyph.ymin } else { glyph.ymax }
+                    if first {
+                        xmin = glyph.xmin
+                        xmax = glyph.xmax
+                        ymin = glyph_ymin
+                        ymax = glyph_ymax
+                        first = false
+                    } else {
+                        if x + glyph.xmin < xmin {
+                            xmin = x + glyph.xmin
+                        }
+                        if x + glyph.xmax > xmax {
+                            xmax = x + glyph.xmax
+                        }
+                        if y + glyph_ymin < ymin {
+                            ymin = y + glyph_ymin
+                        }
+                        if y + glyph_ymax > ymax {
+                            ymax = y + glyph_ymax
+                        }
+                    }
+                    let translated = translate_path(glyph.d, x, y, invert_y: !y_up)?
+                    path.write(translated)
+                    if glyph.horiz_adv_x > 0.0 {
+                        x = x + glyph.horiz_adv_x
+                    } else {
+                        x = x + self.horiz_adv_x
+                    }
+                }
+                None => {
+                    chars.write_char(c)
+                    match c {
+                        '\n' => {
+                            x = 0.0
+                            y = y - y_scale * (self.units_per_em - self.descent)
+                        }
+                        '\r' => {
+                            y = y - y_scale * (self.units_per_em - self.descent)
+                        }
+                        _ => {
+                            x = x + self.horiz_adv_x
+                        }
+                    }
+                }
+            }
+        }
+
+        let char = chars.build()
+        let gerber_lp = gerbers.build()
+        let mut d = path.build()
+        let topy = if y_up { ymax } else { ymin }
+        let boty = if y_up { ymin } else { ymax }
+        let dx, dy = match alignment {
+            Alignment::Unchanged => (0.0, 0.0)
+            Alignment::TopLeft => (-xmin, -topy)
+            Alignment::TopCenter => (-(xmin + xmax) / 2.0, -topy)
+            Alignment::TopRight => (-xmax, -topy)
+            Alignment::CenterLeft => (-xmin, -(boty + topy) / 2.0)
+            Alignment::Center => (-(xmin + xmax) / 2.0, -(boty + topy) / 2.0)
+            Alignment::CenterRight => (-xmax, -(boty + topy) / 2.0)
+            Alignment::BaselineLeft => (-xmin, 0.0)
+            Alignment::BaselineCenter => (-(xmin + xmax) / 2.0, 0.0)
+            Alignment::BaselineRight => (-xmax, 0.0)
+            Alignment::BottomLeft => (-xmin, -boty)
+            Alignment::BottomCenter => (-(xmin + xmax) / 2.0, -boty)
+            Alignment::BottomRight => (-xmax, -boty)
+            Alignment::RatioXY(rx, ry) => (-mix(xmin, xmax, rx), -mix(boty, topy, 1.0 - ry))
+        }
+        if alignment != Alignment::Unchanged {
+            d = translate_path(d, dx, dy)?
+            xmin += dx
+            ymin += dy
+            xmax += dx
+            ymax += dy
+        }
+        Ok(Glyph {
+            char: char
+            horiz_adv_x: 0.0
+            gerber_lp: gerber_lp
+            d: d
+            xmin: xmin
+            ymin: ymin
+            xmax: xmax
+            ymax: ymax
+        })
+    }
+}

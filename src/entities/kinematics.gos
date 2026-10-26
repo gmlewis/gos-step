@@ -1,0 +1,82 @@
+//! STEP entity models: kinematics family.
+//!
+//! Ported 1:1 from the reference implementation; the
+//! serialization (including spacing quirks) is the contract.
+
+use crate::entity::Entity
+use crate::fmt::{step_str}
+use crate::ids::{Ref}
+
+fn step_str_or_dollar(s: String) -> String {
+    if s == "$" { "$" } else { step_str(s) }
+}
+
+fn bool_to_step(b: bool) -> String {
+    if b { ".T." } else { ".F." }
+}
+
+// Represents a KINEMATIC_JOINT entity.
+// Example:
+//   KINEMATIC_JOINT('name', #10, #20)
+// where #10 and #20 are KINEMATIC_LINKs.
+pub struct KinematicJoint {
+    pub name: String
+    pub first_link: Ref
+    pub second_link: Ref
+}
+
+impl KinematicJoint {
+    pub fn new(name: String, first_link: Ref, second_link: Ref) -> KinematicJoint {
+        KinematicJoint { name: name, first_link: first_link, second_link: second_link }
+    }
+}
+
+impl Entity for KinematicJoint {
+    fn to_step(self) -> String {
+        let l1 = f"#{self.first_link.id.value}"
+        let l2 = f"#{self.second_link.id.value}"
+        f"KINEMATIC_JOINT({step_str(self.name)},{l1},{l2})"
+    }
+}
+
+// Represents a KINEMATIC_LINK entity.
+// Example:
+//   KINEMATIC_LINK('link name')
+pub struct KinematicLink {
+    pub name: String
+}
+
+impl KinematicLink {
+    pub fn new(name: String) -> KinematicLink {
+        KinematicLink { name: name }
+    }
+}
+
+impl Entity for KinematicLink {
+    fn to_step(self) -> String {
+        f"KINEMATIC_LINK({step_str(self.name)})"
+    }
+}
+
+// Represents a KINEMATIC_PAIR entity.
+// Example:
+//   KINEMATIC_PAIR('name', 'description', #10)
+// where #10 is a KINEMATIC_JOINT.
+pub struct KinematicPair {
+    pub name: String
+    pub description: String
+    pub joint: Ref
+}
+
+impl KinematicPair {
+    pub fn new(name: String, description: String, joint: Ref) -> KinematicPair {
+        KinematicPair { name: name, description: description, joint: joint }
+    }
+}
+
+impl Entity for KinematicPair {
+    fn to_step(self) -> String {
+        let joint_str = f"#{self.joint.id.value}"
+        f"KINEMATIC_PAIR({step_str(self.name)},{step_str(self.description)},{joint_str})"
+    }
+}

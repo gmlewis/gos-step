@@ -1,0 +1,224 @@
+//! 36-chronos-gear-flower
+//!
+//! A high-detail model that demonstrates the power of parametric
+//! modeling. It features radial symmetry, complex profiles,
+//! and multiple colors.
+//!
+//! Usage (stdout):
+//!   ./run-example.sh 36 > flower.step
+//!
+//! Usage (write file):
+//!   ./run-example.sh 36 -o flower.step
+
+use std::env
+use std::math
+use std::process
+
+use step
+use step::Face::{Top}
+
+fn reverse(pts: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+// Rotation of `p` by the Rz * Ry * Rx order, angles in degrees.
+fn rotate_point(p: (f64, f64, f64), rx: f64, ry: f64, rz: f64) -> (f64, f64, f64) {
+    let rad_x = rx * math::PI / 180.0
+    let rad_y = ry * math::PI / 180.0
+    let rad_z = rz * math::PI / 180.0
+    let sx = math::sin(rad_x)
+    let cx = math::cos(rad_x)
+    let sy = math::sin(rad_y)
+    let cy = math::cos(rad_y)
+    let sz = math::sin(rad_z)
+    let cz = math::cos(rad_z)
+    let m00 = cy * cz
+    let m01 = sx * sy * cz - cx * sz
+    let m02 = cx * sy * cz + sx * sz
+    let m10 = cy * sz
+    let m11 = sx * sy * sz + cx * cz
+    let m12 = cx * sy * sz - sx * cz
+    let m20 = -sy
+    let m21 = sx * cy
+    let m22 = cx * cy
+    let x, y, z = p
+    (
+        m00 * x + m01 * y + m02 * z
+        m10 * x + m11 * y + m12 * z
+        m20 * x + m21 * y + m22 * z
+    )
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "petals": step::opt_int(12, help: "Number of petals", min: Some(3), max: Some(36))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "36-chronos-gear-flower"
+        "Generate a Chronos Gear-Flower model."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let num_petals = args.int_or("petals", 12)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => (0.0, 0.0, 0.0)
+    }
+    let design = step::design(name: "chronos-gear-flower", documentation: args.documentation())
+
+    // 1. Central Hub - Tiered "Reactor Core"
+    // Outer Ring (lowest)
+    let hub_outer_h = 8.0
+    let hub_outer = step::tube(34.0, 28.0, hub_outer_h)
+        .named("hub-outer")
+        .colored(step::rgb(0.0, 0.2, 0.5)) // Deep Space Blue
+
+    // Middle Ring (mid height)
+    let hub_mid_h = 12.0
+    let hub_mid = step::tube(26.0, 20.0, hub_mid_h)
+        .named("hub-mid")
+        .colored(step::CYAN)
+
+    // Inner Core (tallest) - Enlarged for better text visibility
+    let hub_core_h = 16.0
+    let hub_core = step::tube(18.0, 0.0, hub_core_h)
+        .named("hub-core")
+        .colored(step::MAGENTA)
+    let mut design = design.add(hub_outer).add(hub_mid).add(hub_core)
+
+    // 2. Petals - Parametric sweeping shapes with "Propeller" rotation
+    let mut i: i64 = 0
+    while i < num_petals {
+        let angle = i as f64 * 360.0 / num_petals as f64
+
+        // Alternating colors for depth
+        let color = if i % 2 == 0 {
+            step::rgb(0.6, 0.0, 0.8) // Royal Purple
+        } else {
+            step::rgb(0.8, 0.0, 0.6) // Deep Magenta
+        }
+
+        // Restoration of wider organic petal profile
+        let outer_pts = #[
+            (0.0, -2.0)
+            (15.0, -6.0)
+            (40.0, -18.0)
+            (70.0, -22.0)
+            (90.0, -10.0)
+            (100.0, 0.0)
+            (90.0, 10.0)
+            (70.0, 22.0)
+            (40.0, 18.0)
+            (15.0, 6.0)
+            (0.0, 2.0)
+        ]
+
+        // Slotted cutout
+        let hole_pts = reverse(#[
+            (20.0, -3.0)
+            (50.0, -10.0)
+            (80.0, -5.0)
+            (85.0, 0.0)
+            (80.0, 5.0)
+            (50.0, 10.0)
+            (20.0, 3.0)
+        ])
+        let petal = step::extrude(step::profile(outer_pts).add_hole(hole_pts), 2.0)
+            .named(f"petal-{i}")
+            .colored(color)
+            // "Propeller Pitch": Rotate around the longitudinal (X) axis
+            .turned_x(35.0)
+            // Tilt UPWARD slightly
+            .turned_y(-15.0)
+            .turned_z(angle)
+            .moved(0.0, 0.0, 4.0)
+        design = design.add(petal)
+
+        // Inner "Power Blade" - shorter, counter-pitched
+        let blade_pts = #[
+            (0.0, -1.5)
+            (20.0, -4.0)
+            (45.0, 0.0)
+            (20.0, 4.0)
+            (0.0, 1.5)
+        ]
+        let blade = step::extrude(step::profile(blade_pts), 1.5)
+            .named(f"blade-{i}")
+            .colored(step::CYAN)
+            .turned_x(-35.0) // Opposite pitch
+            .turned_y(-25.0) // Steeper tilt
+            .turned_z(angle + 180.0 / num_petals as f64)
+            .moved(0.0, 0.0, hub_mid_h - 1.0)
+        design = design.add(blade)
+        i += 1
+    }
+
+    // 3. Filaments - Floating energy emitters, leaning outward to clear text
+    let num_filaments = 6
+    let filament_radius = 8.0
+    let mut f: i64 = 0
+    while f < num_filaments {
+        let angle = f as f64 * 360.0 / num_filaments as f64 + 30.0
+        let rad = angle * math::PI / 180.0
+        let fx = filament_radius * math::cos(rad)
+        let fy = filament_radius * math::sin(rad)
+
+        // Slanted filament rod leaning OUTWARD (65 degrees tilt)
+        let filament = step::tube(1.5, 0.0, 35.0)
+            .named(f"filament-{f}")
+            .colored(step::WHITE)
+            .turned_x(65.0)
+            .turned_z(angle)
+            .moved(fx, fy, hub_core_h - 2.0)
+
+        // Tip "Emitter"
+        let lx, ly, lz = rotate_point((0.0, 0.0, 35.0), 65.0, 0.0, angle)
+        let emitter = step::tube(5.0, 2.5, 5.0)
+            .named(f"emitter-{f}")
+            .colored(step::ORANGE)
+            .turned_x(65.0)
+            .turned_z(angle)
+            .moved(fx + lx, fy + ly, hub_core_h - 2.0 + lz)
+        design = design.add(filament).add(emitter)
+        f += 1
+    }
+
+    // 4. Branding - High-contrast text on the Core
+    let font = step::load_font("baloo")?
+    design = design.add_text_on_face(hub_core, "CHRONOS", Top, font, color: step::WHITE, margin: Some(2.0), emboss_depth: Some(1.5))
+    design = design.moved(tx, ty, tz)
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(_) => design.write_blender_python(bpy_path)?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

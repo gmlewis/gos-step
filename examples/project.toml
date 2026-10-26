@@ -1,0 +1,7 @@
+[project]
+id = "github.com/gmlewis/gos-step/examples"
+version = "0.1.0"
+gossamer-version = "^v0.75.1"
+
+[dependencies]
+step = { path = ".." }

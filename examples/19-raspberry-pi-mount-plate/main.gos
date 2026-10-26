@@ -1,0 +1,144 @@
+//! 19-raspberry-pi-mount-plate — a mounting plate with the Raspberry Pi hole
+//! pattern and cable strain-relief slots.
+
+use std::env
+use std::process
+
+use step
+
+/// Reverse a 2D loop.
+fn rev_pts(pts: Vec<step::V2>) -> Vec<step::V2> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+fn raspberry_pi_mount_plate(
+    width: f64
+    length: f64
+    thickness: f64
+    hole_diameter: f64
+    slot_length: f64
+    slot_width: f64
+) -> step::Shape {
+    let outer = step::rounded_rect(width, length, 3.0)
+
+    // Raspberry Pi standard hole pattern: 58mm x 49mm
+    let rpi_w = 58.0
+    let rpi_h = 49.0
+    let off_x = (width - rpi_w) / 2.0
+    let off_y = (length - rpi_h) / 2.0
+    let mut holes = #[]
+
+    // Mounting holes
+    let hole_locs = #[
+        (off_x, off_y)
+        (off_x + rpi_w, off_y)
+        (off_x + rpi_w, off_y + rpi_h)
+        (off_x, off_y + rpi_h)
+    ]
+    for loc in hole_locs {
+        let hx, hy = loc
+        holes.push(rev_pts(step::translate_pts(step::circle(hole_diameter), hx, hy)))
+    }
+
+    // Strain relief slots
+    // Left slots
+    let mut i = 0
+    while i < 2 {
+        let sy = off_y + 10.0 + i as f64 * 20.0
+        let sx = off_x / 2.0
+        let hole = rev_pts(#[
+            (sx - slot_width / 2.0, sy - slot_length / 2.0)
+            (sx + slot_width / 2.0, sy - slot_length / 2.0)
+            (sx + slot_width / 2.0, sy + slot_length / 2.0)
+            (sx - slot_width / 2.0, sy + slot_length / 2.0)
+        ])
+        holes.push(hole)
+        i += 1
+    }
+    // Right slots
+    let mut ri = 0
+    while ri < 2 {
+        let sy = off_y + 10.0 + ri as f64 * 20.0
+        let sx = width - off_x / 2.0
+        let hole = rev_pts(#[
+            (sx - slot_width / 2.0, sy - slot_length / 2.0)
+            (sx + slot_width / 2.0, sy - slot_length / 2.0)
+            (sx + slot_width / 2.0, sy + slot_length / 2.0)
+            (sx - slot_width / 2.0, sy + slot_length / 2.0)
+        ])
+        holes.push(hole)
+        ri += 1
+    }
+    step::extrude(step::profile(outer).add_all_holes(holes), thickness)
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "width": step::opt_double(85.0, help: "Width of the mounting plate (mm)", min: Some(65.0))
+        "length": step::opt_double(75.0, help: "Length of the mounting plate (mm)", min: Some(55.0))
+        "thickness": step::opt_double(3.0, help: "Plate thickness (mm)", min: Some(1.0))
+        "holeDiameter": step::opt_double(3.0, help: "Mounting hole diameter (mm, RPi standard is 2.75-3.0)", min: Some(1.0))
+        "slotLength": step::opt_double(12.0, help: "Cable tie slot length (mm)", min: Some(5.0))
+        "slotWidth": step::opt_double(3.0, help: "Cable tie slot width (mm)", min: Some(1.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(step::with_translate(spec), "19-raspberry-pi-mount-plate", "Generate a Raspberry Pi mount plate STEP model.", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let width = args.double_or("width", 85.0)
+    let length = args.double_or("length", 75.0)
+    let thickness = args.double_or("thickness", 3.0)
+    let hole_diameter = args.double_or("holeDiameter", 3.0)
+    let slot_length = args.double_or("slotLength", 12.0)
+    let slot_width = args.double_or("slotWidth", 3.0)
+    // Adjacent slots are 20 mm apart; longer slots would touch and merge into
+    // one non-manifold hole.
+    if slot_length >= 20.0 {
+        eprintln("error: --slotLength must be less than 20 (the slot spacing) so adjacent slots do not merge")
+        process::exit(1)
+    }
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+    let plate = raspberry_pi_mount_plate(width, length, thickness, hole_diameter, slot_length, slot_width)
+        .named("rpi-mount-plate")
+        .colored(step::GREEN)
+        .moved(x: tx - width / 2.0, y: ty - length / 2.0, z: tz)
+    let design = step::design(name: "raspberry-pi-mount-plate", documentation: args.documentation())
+        .add(plate)
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

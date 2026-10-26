@@ -1,0 +1,195 @@
+//! Header-section models for ISO 10303-21 STEP files.
+//!
+//! The common/required header entities are modelled directly
+//! (`FILE_DESCRIPTION`, `FILE_NAME`, `FILE_SCHEMA`); any other header
+//! statement can be preserved verbatim as `HeaderEntity::Raw`.
+
+use crate::fmt::step_str
+
+/// A header value that is either the STEP "unset" marker `$` or a string.
+pub enum StringOrDollar {
+    Dollar
+    Str(String)
+}
+
+/// A header value that is either `$` or a list of strings.
+pub enum StringListOrDollar {
+    Dollar
+    List(Vec<String>)
+}
+
+/// `FILE_DESCRIPTION(...)`.
+pub struct FileDescription {
+    pub description: Vec<String>
+    pub implementation_level: String
+}
+
+impl FileDescription {
+    pub fn new(description: Vec<String>, implementation_level: String) -> FileDescription {
+        FileDescription {
+            description: description
+            implementation_level: implementation_level
+        }
+    }
+}
+
+/// `FILE_NAME(...)`.
+pub struct FileName {
+    pub name: StringOrDollar
+    pub time_stamp: StringOrDollar
+    pub author: StringListOrDollar
+    pub organization: StringListOrDollar
+    pub preprocessor_version: StringOrDollar
+    pub originating_system: StringOrDollar
+    pub authorization: StringOrDollar
+}
+
+impl FileName {
+    pub fn new(
+        name: StringOrDollar
+        time_stamp: StringOrDollar
+        author: StringListOrDollar
+        organization: StringListOrDollar
+        preprocessor_version: StringOrDollar
+        originating_system: StringOrDollar
+        authorization: StringOrDollar
+    ) -> FileName {
+        FileName {
+            name: name
+            time_stamp: time_stamp
+            author: author
+            organization: organization
+            preprocessor_version: preprocessor_version
+            originating_system: originating_system
+            authorization: authorization
+        }
+    }
+}
+
+/// `FILE_SCHEMA(...)`.
+pub struct FileSchema {
+    pub schema_identifiers: Vec<String>
+}
+
+impl FileSchema {
+    pub fn new(schema_identifiers: Vec<String>) -> FileSchema {
+        FileSchema { schema_identifiers: schema_identifiers }
+    }
+}
+
+/// One statement inside the HEADER section.
+pub enum HeaderEntity {
+    FileDescription(FileDescription)
+    FileName(FileName)
+    FileSchema(FileSchema)
+    /// Emitted as a Part 21 `/* ... */` comment block.
+    Comment(String)
+    Raw(String)
+}
+
+/// The HEADER section.
+pub struct HeaderSection {
+    pub entities: Vec<HeaderEntity>
+}
+
+impl HeaderSection {
+    pub fn empty() -> HeaderSection {
+        HeaderSection { entities: #[] }
+    }
+
+    pub fn new(entities: Vec<HeaderEntity>) -> HeaderSection {
+        HeaderSection { entities: entities }
+    }
+
+    /// Serialize only the statements inside `HEADER ... ENDSEC`.
+    ///
+    /// Each statement is terminated with a semicolon and separated by
+    /// newlines. Comments are emitted without a trailing semicolon.
+    pub fn to_step_statements(self) -> String {
+        let mut parts = #[]
+        for e in self.entities {
+            match e {
+                HeaderEntity::Comment(_) => parts.push(header_entity_to_step(e))
+                _ => parts.push(header_entity_to_step(e) + ";")
+            }
+        }
+        parts.join("\n")
+    }
+
+    /// Serialize the full HEADER section, including its wrappers.
+    pub fn to_step_header_section(self) -> String {
+        let body = self.to_step_statements()
+        if body.len() == 0 {
+            "HEADER;\nENDSEC;"
+        } else {
+            f"HEADER;\n{body}\nENDSEC;"
+        }
+    }
+}
+
+fn string_or_dollar_to_step(s: StringOrDollar) -> String {
+    match s {
+        StringOrDollar::Dollar => "$"
+        StringOrDollar::Str(v) => step_str(v)
+    }
+}
+
+fn string_list_to_step(values: Vec<String>) -> String {
+    let mut quoted = #[]
+    for v in values {
+        quoted.push(step_str(v))
+    }
+    f"({quoted.join(",")})"
+}
+
+fn string_list_or_dollar_to_step(s: StringListOrDollar) -> String {
+    match s {
+        StringListOrDollar::Dollar => "$"
+        StringListOrDollar::List(values) => string_list_to_step(values)
+    }
+}
+
+fn file_description_to_step(fd: FileDescription) -> String {
+    let desc = string_list_to_step(fd.description)
+    let impl_level = step_str(fd.implementation_level)
+    f"FILE_DESCRIPTION({desc},{impl_level})"
+}
+
+fn file_name_to_step(fn_: FileName) -> String {
+    let a0 = string_or_dollar_to_step(fn_.name)
+    let a1 = string_or_dollar_to_step(fn_.time_stamp)
+    let a2 = string_list_or_dollar_to_step(fn_.author)
+    let a3 = string_list_or_dollar_to_step(fn_.organization)
+    let a4 = string_or_dollar_to_step(fn_.preprocessor_version)
+    let a5 = string_or_dollar_to_step(fn_.originating_system)
+    let a6 = string_or_dollar_to_step(fn_.authorization)
+    f"FILE_NAME({a0},{a1},{a2},{a3},{a4},{a5},{a6})"
+}
+
+fn file_schema_to_step(fs: FileSchema) -> String {
+    let schemas = string_list_to_step(fs.schema_identifiers)
+    f"FILE_SCHEMA({schemas})"
+}
+
+/// Format a Part 21 comment block.
+///
+/// STEP comments are delimited by `/*` and `*/` and may span multiple lines,
+/// but may not themselves contain `*/`; that sequence is escaped to `* /`.
+fn comment_to_step(text: String) -> String {
+    let safe = text.replace("*/", "* /")
+    let mut lines = #[]
+    for line in safe.split("\n") {
+        lines.push("  " + line)
+    }
+    f"/*\n{lines.join("\n")}\n*/"
+}
+
+fn header_entity_to_step(e: HeaderEntity) -> String {
+    match e {
+        HeaderEntity::FileDescription(fd) => file_description_to_step(fd)
+        HeaderEntity::FileName(fn_) => file_name_to_step(fn_)
+        HeaderEntity::FileSchema(fs) => file_schema_to_step(fs)
+        HeaderEntity::Comment(text) => comment_to_step(text)
+        HeaderEntity::Raw(s) => s.trim()
+    }
+}

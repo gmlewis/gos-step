@@ -1,0 +1,82 @@
+//! Locating and loading gzip-compressed font files.
+//!
+//! A font is a gzip stream whose decompressed payload is plain UTF-8 JSON.
+//! `load_font` searches, in order:
+//!
+//! 1. `$STEP_ROOT/assets/fonts/<name>.json.gz`
+//! 2. `./assets/fonts/<name>.json.gz`
+//! 3. `$STEP_FONTS_DIR/assets/fonts/<name>.json.gz`
+//!
+//! The first existing file wins. When none exists, a diagnostic is printed to
+//! stderr and the returned `LoaderError` says the font was not found.
+
+use std::compress::gzip
+use std::env
+use std::fs
+
+use crate::error::LoaderError
+use crate::font::model::{Font, decode_font}
+
+/// Join a directory and a relative path, tolerating a trailing slash.
+fn join_dir(dir: String, rest: String) -> String {
+    if dir.ends_with("/") {
+        f"{dir}{rest}"
+    } else {
+        f"{dir}/{rest}"
+    }
+}
+
+/// Read, decompress, and decode one font file.
+fn read_font(path: String) -> Result<Font, LoaderError> {
+    let data = match fs::read(path) {
+        Ok(bytes) => bytes
+        Err(err) => return Err(LoaderError::new(f"Error reading font file at '{path}': {err}"))
+    }
+    let payload = match gzip::decode(data) {
+        Ok(bytes) => bytes
+        Err(err) => return Err(LoaderError::new(f"Gzip decompression error: {err}"))
+    }
+    let text = match String::from_utf8(payload) {
+        Ok(s) => s
+        Err(err) => return Err(LoaderError::new(f"JSON decode error: {err}"))
+    }
+    match decode_font(text) {
+        Ok(font) => Ok(font)
+        Err(message) => Err(LoaderError::new(f"JSON decode error: {message}"))
+    }
+}
+
+/// Load a font by its short name (for example `"baloo"`).
+pub fn load_font(name: String) -> Result<Font, LoaderError> {
+    let mut candidates: Vec<String> = #[]
+    match env::var("STEP_ROOT") {
+        Some(root) => candidates.push(join_dir(root, f"assets/fonts/{name}.json.gz"))
+        None => {}
+    }
+    candidates.push(f"./assets/fonts/{name}.json.gz")
+    match env::var("STEP_FONTS_DIR") {
+        Some(dir) => candidates.push(join_dir(dir, f"assets/fonts/{name}.json.gz"))
+        None => {}
+    }
+
+    let mut i = 0
+    while i < candidates.len() {
+        let path = candidates[i]
+        if fs::exists(path) {
+            return read_font(path)
+        }
+        i += 1
+    }
+
+    let mut message = f"Font '{name}' not found.\nChecked paths:\n"
+    let mut j = 0
+    while j < candidates.len() {
+        message = message + f"- {candidates[j]}\n"
+        j += 1
+    }
+    message = message +
+        f"\nPlace '{name}.json.gz' in assets/fonts, or point STEP_ROOT " +
+        f"or STEP_FONTS_DIR at a directory that contains an assets/fonts folder."
+    eprintln(message)
+    Err(LoaderError::new(f"Font '{name}' not found. See above for instructions."))
+}

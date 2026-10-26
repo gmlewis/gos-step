@@ -1,0 +1,121 @@
+//! STEP text formatting helpers.
+//!
+//! STEP reals follow the ISO 10303-21 grammar: a mandatory decimal point and
+//! an upper-case `E` for exponents. The reference implementation relies on
+//! the reference's `Double::to_string`; `ref_to_string` reproduces it exactly on
+//! Gossamer.
+
+use std::math
+
+/// Quote a STEP string, doubling embedded single quotes.
+pub fn step_str(s: String) -> String {
+    "'" + s.replace("'", "''") + "'"
+}
+
+/// Clear floating-point residue without grid-snapping.
+pub fn near_zero_double(v: f64) -> f64 {
+    if math::abs(v) < 1.0e-12 { 0.0 } else { v }
+}
+
+/// the reference `Double::to_string` semantics: plain decimal in `[1e-6, 1e21)`,
+/// scientific outside it, positive exponents carrying an explicit `+`.
+pub fn ref_to_string(n: f64) -> String {
+    if n == 0.0 {
+        return "0"
+    }
+    let a = math::abs(n)
+    if a < 1.0e-6 || a >= 1.0e21 {
+        // Gossamer's `:e` is shortest-round-trip, lower-case, no '+' sign.
+        let s = f"{n:e}"
+        let parts = s.split("e")
+        let mant = parts[0]
+        let exp = parts[1].to_i64().unwrap()
+        if exp >= 0 {
+            f"{mant}e+{exp}"
+        } else {
+            f"{mant}e{exp}"
+        }
+    } else {
+        n.to_string()
+    }
+}
+
+/// Format a STEP real.
+pub fn fmt_num(n: f64) -> String {
+    // Rounding trig residue (< 1e-12) to zero keeps such values out of
+    // exponent form and makes nominally axis-aligned geometry exact.
+    if math::abs(n) < 1.0e-12 {
+        return "0.0"
+    }
+    if n == math::floor(n) {
+        // `as i32` saturates like the reference's 32-bit `to_int()`.
+        return f"{n as i32}.0"
+    }
+    let s = ref_to_string(n).replace("e", "E")
+    let parts = s.split("E")
+    if parts.len() == 2 {
+        let mant = if parts[0].contains(".") {
+            parts[0]
+        } else {
+            parts[0] + ".0"
+        }
+        f"{mant}E{parts[1]}"
+    } else {
+        s
+    }
+}
+
+/// Snap `v` to a grid of `eps`, or merely clear residue when unsnapped.
+pub fn snap_double(v: f64, snapping: Option<f64>) -> f64 {
+    match snapping {
+        None => near_zero_double(v)
+        Some(eps) => {
+            if eps <= 0.0 {
+                return v
+            }
+            let sign = if v < 0.0 { -1.0 } else { 1.0 }
+            let abs_v = math::abs(v)
+            let scaled = (abs_v / eps + 0.5) as i32 as f64
+            sign * scaled * eps
+        }
+    }
+}
+
+/// Format a double, honouring an optional snapping tolerance.
+pub fn fmt_double(v: f64, snapping: Option<f64>) -> String {
+    match snapping {
+        None => ref_to_string(v)
+        Some(eps) => {
+            if eps <= 0.0 {
+                return ref_to_string(v)
+            }
+            let snapped = snap_double(v, Some(eps))
+            let abs_snapped = math::abs(snapped)
+            let mut prec = 0
+            let mut temp_eps = eps
+            while temp_eps < 0.999999 && prec < 10 {
+                temp_eps = temp_eps * 10.0
+                prec += 1
+            }
+            let mut multiplier: i64 = 1
+            let mut i = 0
+            while i < prec {
+                multiplier = multiplier * 10
+                i += 1
+            }
+            let scaled = (abs_snapped * multiplier as f64 + 0.5) as i64
+            let whole = scaled / multiplier
+            let frac = scaled % multiplier
+            let mut frac_str = frac.to_string()
+            while frac_str.len() < prec {
+                frac_str = "0" + frac_str
+            }
+            let sign_str = if snapped < -eps / 2.0 { "-" } else { "" }
+            if prec > 0 {
+                f"{sign_str}{whole}.{frac_str}"
+            } else {
+                f"{sign_str}{whole}.0"
+            }
+        }
+    }
+}

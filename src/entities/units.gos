@@ -1,0 +1,300 @@
+//! STEP entity models: units family.
+//!
+//! Ported 1:1 from the reference implementation; the
+//! serialization (including spacing quirks) is the contract.
+
+use crate::entity::Entity
+use crate::fmt::{fmt_num, step_str}
+use crate::ids::{Ref}
+
+fn step_str_or_dollar(s: String) -> String {
+    if s == "$" { "$" } else { step_str(s) }
+}
+
+fn bool_to_step(b: bool) -> String {
+    if b { ".T." } else { ".F." }
+}
+
+// Represents a CONVERSION_BASED_UNIT entity.
+// Example from simple-box.step:
+//   CONVERSION_BASED_UNIT('DEGREE',#192)
+pub struct ConversionBasedUnit {
+    pub name: String
+    pub conversion_factor: Ref
+}
+
+impl ConversionBasedUnit {
+    pub fn new(name: String, conversion_factor: Ref) -> ConversionBasedUnit {
+        ConversionBasedUnit { name: name, conversion_factor: conversion_factor }
+    }
+}
+
+impl Entity for ConversionBasedUnit {
+    fn to_step(self) -> String {
+        let factor_str = f"#{self.conversion_factor.id.value}"
+        f"CONVERSION_BASED_UNIT({step_str(self.name)},{factor_str})"
+    }
+}
+
+// Represents a DERIVED_UNIT entity.
+// Example from MachineContactMedium.step:
+//   DERIVED_UNIT((#586,#587))
+pub struct DerivedUnit {
+    pub elements: Vec<Ref>
+}
+
+impl DerivedUnit {
+    pub fn new(elements: Vec<Ref>) -> DerivedUnit {
+        DerivedUnit { elements: elements }
+    }
+}
+
+impl Entity for DerivedUnit {
+    fn to_step(self) -> String {
+        let elems_str = self.elements.map(|r| { f"#{r.id.value}" }).join(",")
+        f"DERIVED_UNIT(({elems_str}))"
+    }
+}
+
+// Represents a DIMENSIONAL_EXPONENTS entity.
+pub struct DimensionalExponents {
+    pub length_exponent: f64
+    pub mass_exponent: f64
+    pub time_exponent: f64
+    pub electric_current_exponent: f64
+    pub thermodynamic_temperature_exponent: f64
+    pub amount_of_substance_exponent: f64
+    pub luminous_intensity_exponent: f64
+}
+
+impl DimensionalExponents {
+    pub fn new(length_exponent: f64, mass_exponent: f64, time_exponent: f64, electric_current_exponent: f64, thermodynamic_temperature_exponent: f64, amount_of_substance_exponent: f64, luminous_intensity_exponent: f64) -> DimensionalExponents {
+        DimensionalExponents { length_exponent: length_exponent, mass_exponent: mass_exponent, time_exponent: time_exponent, electric_current_exponent: electric_current_exponent, thermodynamic_temperature_exponent: thermodynamic_temperature_exponent, amount_of_substance_exponent: amount_of_substance_exponent, luminous_intensity_exponent: luminous_intensity_exponent }
+    }
+}
+
+impl Entity for DimensionalExponents {
+    fn to_step(self) -> String {
+        let l = fmt_num(self.length_exponent)
+        let m = fmt_num(self.mass_exponent)
+        let t = fmt_num(self.time_exponent)
+        let i = fmt_num(self.electric_current_exponent)
+        let th = fmt_num(self.thermodynamic_temperature_exponent)
+        let n = fmt_num(self.amount_of_substance_exponent)
+        let j = fmt_num(self.luminous_intensity_exponent)
+        f"DIMENSIONAL_EXPONENTS({l},{m},{t},{i},{th},{n},{j})"
+    }
+}
+
+// Represents a DERIVED_UNIT_ELEMENT entity.
+// Example from MachineContactMedium.step:
+//   DERIVED_UNIT_ELEMENT(#588,1.)
+pub struct DerivedUnitElement {
+    pub unit: Ref
+    pub exponent: f64
+}
+
+impl DerivedUnitElement {
+    pub fn new(unit: Ref, exponent: f64) -> DerivedUnitElement {
+        DerivedUnitElement { unit: unit, exponent: exponent }
+    }
+}
+
+impl Entity for DerivedUnitElement {
+    fn to_step(self) -> String {
+        let unit_str = f"#{self.unit.id.value}"
+        f"DERIVED_UNIT_ELEMENT({unit_str},{fmt_num(self.exponent)})"
+    }
+}
+
+// Represents a LENGTH_UNIT entity.
+pub struct LengthUnit {
+}
+
+impl LengthUnit {
+    pub fn new() -> LengthUnit {
+        LengthUnit {}
+    }
+}
+
+impl Entity for LengthUnit {
+    fn to_step(self) -> String {
+        "LENGTH_UNIT()"
+    }
+}
+
+// Represents a MASS_UNIT entity.
+// Usually appears as a part of a complex unit instance alongside NAMED_UNIT and SI_UNIT.
+pub struct MassUnit {
+}
+
+impl MassUnit {
+    pub fn new() -> MassUnit {
+        MassUnit {}
+    }
+}
+
+impl Entity for MassUnit {
+    fn to_step(self) -> String {
+        "MASS_UNIT()"
+    }
+}
+
+// Represents a MEASURE_WITH_UNIT entity.
+// Example:
+//   MEASURE_WITH_UNIT(LENGTH_MEASURE(5.0), #10)
+pub struct MeasureWithUnit {
+    pub value_component: String // e.g. "LENGTH_MEASURE(5.0)"
+    pub unit_component: Ref
+}
+
+impl MeasureWithUnit {
+    pub fn new(value_component: String, unit_component: Ref) -> MeasureWithUnit {
+        MeasureWithUnit { value_component: value_component, unit_component: unit_component }
+    }
+}
+
+impl Entity for MeasureWithUnit {
+    fn to_step(self) -> String {
+        let unit_str = f"#{self.unit_component.id.value}"
+        f"MEASURE_WITH_UNIT({self.value_component},{unit_str})"
+    }
+}
+
+// Represents a NAMED_UNIT entity (often used inside complex instances).
+// In our fixtures this appears as: NAMED_UNIT(*)
+pub struct NamedUnit {
+    pub dimensions: String
+}
+
+impl NamedUnit {
+    pub fn new(dimensions: String) -> NamedUnit {
+        NamedUnit { dimensions: dimensions }
+    }
+}
+
+impl Entity for NamedUnit {
+    fn to_step(self) -> String {
+        f"NAMED_UNIT({self.dimensions})"
+    }
+}
+
+// Represents a PLANE_ANGLE_MEASURE_WITH_UNIT entity.
+//
+// For the simple-box fixture, the measure component is always `PLANE_ANGLE_MEASURE(<literal>)`.
+pub struct PlaneAngleMeasureWithUnit {
+    pub plane_angle_measure_literal: String
+    pub unit: Ref
+}
+
+impl PlaneAngleMeasureWithUnit {
+    pub fn new(plane_angle_measure_literal: String, unit: Ref) -> PlaneAngleMeasureWithUnit {
+        PlaneAngleMeasureWithUnit { plane_angle_measure_literal: plane_angle_measure_literal, unit: unit }
+    }
+}
+
+impl Entity for PlaneAngleMeasureWithUnit {
+    fn to_step(self) -> String {
+        let unit_str = f"#{self.unit.id.value}"
+        f"PLANE_ANGLE_MEASURE_WITH_UNIT(PLANE_ANGLE_MEASURE({self.plane_angle_measure_literal}),{unit_str})"
+    }
+}
+
+// Represents a PLANE_ANGLE_UNIT entity.
+pub struct PlaneAngleUnit {
+}
+
+impl PlaneAngleUnit {
+    pub fn new() -> PlaneAngleUnit {
+        PlaneAngleUnit {}
+    }
+}
+
+impl Entity for PlaneAngleUnit {
+    fn to_step(self) -> String {
+        "PLANE_ANGLE_UNIT()"
+    }
+}
+
+// Represents a POSITIVE_RATIO_MEASURE value.
+// This is not a standalone STEP entity row; it appears inline, e.g.
+//   POSITIVE_RATIO_MEASURE(7850.)
+//
+// Notes:
+// - We store the inner numeric literal as a raw string to preserve formatting.
+pub struct PositiveRatioMeasure {
+    pub value: String
+}
+
+impl PositiveRatioMeasure {
+    pub fn new(value: String) -> PositiveRatioMeasure {
+        let trimmed = value.trim()
+        PositiveRatioMeasure { value: trimmed, }
+    }
+}
+
+impl Entity for PositiveRatioMeasure {
+    fn to_step(self) -> String {
+        f"POSITIVE_RATIO_MEASURE({self.value})"
+    }
+}
+
+// Represents a SI_UNIT entity (often used inside complex instances).
+// Examples:
+//   SI_UNIT($,.RADIAN.)
+//   SI_UNIT(.MILLI.,.METRE.)
+pub struct SiUnit {
+    pub prefix: String
+    pub name: String
+}
+
+impl SiUnit {
+    pub fn new(prefix: String, name: String) -> SiUnit {
+        SiUnit { prefix: prefix, name: name }
+    }
+}
+
+impl Entity for SiUnit {
+    fn to_step(self) -> String {
+        f"SI_UNIT({self.prefix},{self.name})"
+    }
+}
+
+// Represents a SOLID_ANGLE_UNIT entity.
+pub struct SolidAngleUnit {
+}
+
+impl SolidAngleUnit {
+    pub fn new() -> SolidAngleUnit {
+        SolidAngleUnit {}
+    }
+}
+
+impl Entity for SolidAngleUnit {
+    fn to_step(self) -> String {
+        "SOLID_ANGLE_UNIT()"
+    }
+}
+
+// Represents an UNCERTAINTY_MEASURE_WITH_UNIT entity.
+//
+// For the simple-box fixture, the measure component is always `LENGTH_MEASURE(<literal>)`.
+pub struct UncertaintyMeasureWithUnit {
+    pub length_measure_literal: String
+    pub unit: Ref
+    pub name: String
+    pub description: String
+}
+
+impl UncertaintyMeasureWithUnit {
+    pub fn new(length_measure_literal: String, unit: Ref, name: String, description: String) -> UncertaintyMeasureWithUnit {
+        UncertaintyMeasureWithUnit { length_measure_literal: length_measure_literal, unit: unit, name: name, description: description }
+    }
+}
+
+impl Entity for UncertaintyMeasureWithUnit {
+    fn to_step(self) -> String {
+        let unit_str = f"#{self.unit.id.value}"
+        f"UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE({self.length_measure_literal}),{unit_str},{step_str(self.name)},{step_str(self.description)})"
+    }
+}

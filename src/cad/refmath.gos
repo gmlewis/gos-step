@@ -1,0 +1,943 @@
+//! Bit-exact `sin`, `cos`, and `tan` for `f64`.
+//!
+//! These are faithful ports of the fdlibm algorithms used by the reference
+//! implementation on non-WebAssembly/non-JavaScript targets.
+//! Every arithmetic operation is kept in the source order: no `mul_add`, no
+//! reassociation, and no algebraic rewrites. The result therefore matches the
+//! reference bit for bit, including signed zeros, subnormals and huge
+//! arguments.
+
+// ---------------------------------------------------------------------------
+// Constants from fdlibm's `k_rem_pio2.c`, `e_rem_pio2.c`, and `s_trig.c`.
+// ---------------------------------------------------------------------------
+
+const TWO_OVER_PI: [i32; 66] = [
+    0xA2F983, 0x6E4E44, 0x1529FC, 0x2757D1, 0xF534DD, 0xC0DB62, 0x95993C, 0x439041
+    0xFE5163, 0xABDEBB, 0xC561B7, 0x246E3A, 0x424DD2, 0xE00649, 0x2EEA09, 0xD1921C
+    0xFE1DEB, 0x1CB129, 0xA73EE8, 0x8235F5, 0x2EBB44, 0x84E99C, 0x7026B4, 0x5F7E41
+    0x3991D6, 0x398353, 0x39F49C, 0x845F8B, 0xBDF928, 0x3B1FF8, 0x97FFDE, 0x05980F
+    0xEF2F11, 0x8B5A0A, 0x6D1F6D, 0x367ECF, 0x27CB09, 0xB74F46, 0x3F669E, 0x5FEA2D
+    0x7527BA, 0xC7EBE5, 0xF17B3D, 0x0739F7, 0x8A5292, 0xEA6BFB, 0x5FB11F, 0x8D5D08
+    0x560330, 0x46FC7B, 0x6BABF0, 0xCFBC20, 0x9AF436, 0x1DA9E3, 0x91615E, 0xE61B08
+    0x659985, 0x5F14A0, 0x68408D, 0xFFD880, 0x4D7327, 0x310606, 0x1556CA, 0x73A8C9
+    0x60E27B, 0xC08C6B
+]
+
+const PI_OVER_2: [f64; 8] = [
+    1.57079625129699707031e+00
+    7.54978941586159635335e-08
+    5.39030252995776476554e-15
+    3.28200341580791294123e-22
+    1.27065575308067607349e-29
+    1.22933308981111328932e-36
+    2.73370053816464559624e-44
+    2.16741683877804819444e-51
+]
+
+const NPIO2_HW: [i32; 32] = [
+    0x3FF921FB, 0x400921FB, 0x4012D97C, 0x401921FB, 0x401F6A7A, 0x4022D97C, 0x4025FDBB
+    0x402921FB, 0x402C463A, 0x402F6A7A, 0x4031475C, 0x4032D97C, 0x40346B9C, 0x4035FDBB
+    0x40378FDB, 0x403921FB, 0x403AB41B, 0x403C463A, 0x403DD85A, 0x403F6A7A, 0x40407E4C
+    0x4041475C, 0x4042106C, 0x4042D97C, 0x4043A28C, 0x40446B9C, 0x404534AC, 0x4045FDBB
+    0x4046C6CB, 0x40478FDB, 0x404858EB, 0x404921FB
+]
+
+const INIT_JK: [i32; 4] = [2, 3, 4, 6]
+
+const PI_OVER_4: f64 = 0.785398163397448309616
+const PIO2_1: f64 = 1.5707963267341256e+00
+const PIO2_1T: f64 = 6.0771005065061922e-11
+const PIO2_2: f64 = 6.0771005063039660e-11
+const PIO2_2T: f64 = 2.0222662487959506e-21
+const PIO2_3: f64 = 2.0222662487111665e-21
+const PIO2_3T: f64 = 8.4784276603688996e-32
+const INV_PIO2: f64 = 6.3661977236758138e-01
+const HALF: f64 = 0.5
+const TWO24: f64 = 16777216.0
+const TWON24: f64 = 5.96046447753906250000e-08
+
+// Canonical quiet NaN returned by the reference implementation.
+const NAN_BITS: u64 = 0x7ff8000000000001
+
+// ---------------------------------------------------------------------------
+// Bit helpers.
+// ---------------------------------------------------------------------------
+
+fn get_high_word(x: f64) -> u32 {
+    (x.to_bits() >> 32) as u32
+}
+
+fn get_low_word(x: f64) -> u32 {
+    x.to_bits() as u32
+}
+
+fn set_low_word(d: f64, v: u32) -> f64 {
+    let bits = (d.to_bits() & 0xffffffff00000000) | (v as u64)
+    f64::from_bits(bits)
+}
+
+fn set_high_word(d: f64, v: u32) -> f64 {
+    let bits = (d.to_bits() & 0x00000000ffffffff) | ((v as u64) << 32)
+    f64::from_bits(bits)
+}
+
+fn is_nan_or_inf(x: f64) -> bool {
+    (x.to_bits() & 0x7fffffffffffffff) >= 0x7ff0000000000000
+}
+
+/// Scale by a power of two (`scalbn` from fdlibm).
+fn scalbn(x: f64, exp: i32) -> f64 {
+    // 2^1023.
+    let huge = f64::from_bits(2_046u64 << 52)
+    // 2^-1022 * 2^53 == 2^-969.
+    let tiny = f64::from_bits(54u64 << 52)
+    let mut n = exp
+    let mut y = x
+    if n > 1023 {
+        y *= huge
+        n -= 1023
+        if n > 1023 {
+            y *= huge
+            n -= 1023
+            if n > 1023 {
+                n = 1023
+            }
+        }
+    } else if n < -1022 {
+        // Make sure the final `n < -53` to avoid double rounding in the
+        // subnormal range.
+        y *= tiny
+        n += 1022 - 53
+        if n < -1022 {
+            y *= tiny
+            n += 1022 - 53
+            if n < -1022 {
+                n = -1022
+            }
+        }
+    }
+    let bits = ((0x3ff + n) as u64) << 52
+    y * f64::from_bits(bits)
+}
+
+// ---------------------------------------------------------------------------
+// Argument reduction.
+// ---------------------------------------------------------------------------
+
+/// Reduce `x` to `y[0] + y[1]` with `x - (n * pi/2)`, returning `n` and the
+/// two-part reduced value.
+fn rem_pio2(x: f64) -> (i32, f64, f64) {
+    let hx = get_high_word(x) as i32
+    let ix = hx & 0x7fffffff
+    if ix <= 0x3fe921fb {
+        // |x| <= pi/4, no reduction needed.
+        return (0, x, 0.0)
+    }
+    if ix < 0x4002d97c {
+        // |x| < 3pi/4, special case with n = +-1.
+        if hx > 0 {
+            let z = x - PIO2_1
+            if ix != 0x3ff921fb {
+                // 33+53 bit pi is good enough.
+                let y0 = z - PIO2_1T
+                return (1, y0, z - y0 - PIO2_1T)
+            }
+            // Near pi/2, use 33+33+53 bit pi.
+            let z = z - PIO2_2
+            let y0 = z - PIO2_2T
+            return (1, y0, z - y0 - PIO2_2T)
+        }
+        // Negative x.
+        let z = x + PIO2_1
+        if ix != 0x3ff921fb {
+            // 33+53 bit pi is good enough.
+            let y0 = z + PIO2_1T
+            return (-1, y0, z - y0 + PIO2_1T)
+        }
+        // Near pi/2, use 33+33+53 bit pi.
+        let z = z + PIO2_2
+        let y0 = z + PIO2_2T
+        return (-1, y0, z - y0 + PIO2_2T)
+    }
+    if ix <= 0x413921fb {
+        // |x| <= 2^19 * (pi/2), medium size.
+        let t = x.abs()
+        let n = (t * INV_PIO2 + HALF) as i32
+        let fn_ = n as f64
+        let mut r = t - fn_ * PIO2_1
+        let mut w = fn_ * PIO2_1T
+        if n >= 32 || ix == NPIO2_HW[n - 1] {
+            let j = ix >> 20
+            let y0_first = r - w
+            let i = j - (((get_high_word(y0_first) >> 20) & 0x7ff) as i32)
+            if i > 16 {
+                // 2nd iteration needed, good to 118 bits.
+                let t = r
+                w = fn_ * PIO2_2
+                r = t - w
+                w = fn_ * PIO2_2T - (t - r - w)
+                let y0_second = r - w
+                let i = j - (((get_high_word(y0_second) >> 20) & 0x7ff) as i32)
+                if i > 49 {
+                    // 3rd iteration needed, 151 bits accuracy.
+                    let t = r
+                    w = fn_ * PIO2_3
+                    r = t - w
+                    w = fn_ * PIO2_3T - (t - r - w)
+                }
+            }
+        }
+        let y0 = r - w
+        let y1 = r - y0 - w
+        if hx > 0 {
+            return (n, y0, y1)
+        }
+        return (-n, -y0, -y1)
+    }
+
+    // All other (large) arguments.
+    if ix >= 0x7ff00000 {
+        // x is inf or NaN.
+        let nan = x - x
+        return (0, nan, nan)
+    }
+
+    // Set z = scalbn(|x|, ilogb(x) - 23).
+    let mut z = set_low_word(0.0, get_low_word(x))
+    let e0 = (ix >> 20) - 1046
+    z = set_high_word(z, (ix - (e0 << 20)) as u32)
+    let mut tx = [0.0, 0.0, 0.0]
+    let mut i = 0
+    while i < 2 {
+        tx[i] = (z as i64) as f64
+        z = (z - tx[i]) * TWO24
+        i += 1
+    }
+    tx[2] = z
+    let mut nx: i32 = 3
+    while tx[nx - 1] == 0.0 {
+        nx -= 1
+    }
+    let n, y0, y1 = kernel_rem_pio2(tx, e0, nx, 2)
+    if hx > 0 {
+        (n, y0, y1)
+    } else {
+        (-n, -y0, -y1)
+    }
+}
+
+/// The `__kernel_rem_pio2` routine, restricted to the paths the reference
+/// needs (all callers pass `prec == 2`, but every `prec` branch is kept).
+fn kernel_rem_pio2(x: [f64; 3], e0: i32, nx: i32, prec: i32) -> (i32, f64, f64) {
+    let mut jz: i32 = 0
+    let mut jx: i32 = 0
+    let mut jv: i32 = 0
+    let mut jp: i32 = 0
+    let mut jk: i32 = 0
+    let mut carry: i32 = 0
+    let mut n: i32 = 0
+    let mut iq: [i32; 20] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut i: i32 = 0
+    let mut j: i32 = 0
+    let mut k: i32 = 0
+    let mut m: i32 = 0
+    let mut q0: i32 = 0
+    let mut ih: i32 = 0
+    let mut z: f64 = 0.0
+    let mut fw: f64 = 0.0
+    let mut f = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut fq = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut q = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    // Initialize jk.
+    jk = INIT_JK[prec]
+    jp = jk
+
+    // Determine jx, jv, q0; note that 3 > q0.
+    jx = nx - 1
+    jv = (e0 - 3) / 24
+    if jv < 0 {
+        jv = 0
+    }
+    q0 = e0 - 24 * (jv + 1)
+
+    // Set up f[0] to f[jx+jk] where f[jx+jk] = ipio2[jv+jk].
+    j = jv - jx
+    m = jx + jk
+    i = 0
+    while i <= m {
+        f[i] = if j < 0 { 0.0 } else { TWO_OVER_PI[j] as f64 }
+        i += 1
+        j += 1
+    }
+
+    // Compute q[0], q[1], ... q[jk].
+    i = 0
+    while i <= jk {
+        j = 0
+        fw = 0.0
+        while j <= jx {
+            fw += x[j] * f[jx + i - j]
+            j += 1
+        }
+        q[i] = fw
+        i += 1
+    }
+    jz = jk
+
+    let mut y0 = 0.0
+    let mut y1 = 0.0
+    let mut recompute = true
+    while recompute {
+        recompute = false
+
+        // Distill q[] into iq[] reversingly.
+        i = 0
+        j = jz
+        z = q[jz]
+        while j > 0 {
+            fw = (TWON24 * z).floor()
+            iq[i] = (z - TWO24 * fw) as i32
+            z = q[j - 1] + fw
+            i += 1
+            j -= 1
+        }
+
+        // Compute n.
+        z = scalbn(z, q0) // actual value of z
+        z -= 8.0 * (z * 0.125).floor() // trim off integer >= 8
+        n = z as i32
+        z -= n as f64
+        ih = 0
+        if q0 > 0 {
+            // Need iq[jz-1] to determine n.
+            i = iq[jz - 1] >> (24 - q0)
+            n += i
+            iq[jz - 1] -= i << (24 - q0)
+            ih = iq[jz - 1] >> (23 - q0)
+        } else if q0 == 0 {
+            ih = iq[jz - 1] >> 23
+        } else if z >= 0.5 {
+            ih = 2
+        }
+        if ih > 0 {
+            // q > 0.5.
+            n += 1
+            carry = 0
+            i = 0
+            while i < jz {
+                j = iq[i]
+                if carry == 0 {
+                    if j != 0 {
+                        carry = 1
+                        iq[i] = 0x1000000 - j
+                    }
+                } else {
+                    iq[i] = 0xffffff - j
+                }
+                i += 1
+            }
+            if q0 > 0 {
+                // Rare case: chance is 1 in 12.
+                if q0 == 1 {
+                    iq[jz - 1] = iq[jz - 1] & 0x7fffff
+                } else if q0 == 2 {
+                    iq[jz - 1] = iq[jz - 1] & 0x3fffff
+                }
+            }
+            if ih == 2 {
+                z = 1.0 - z
+                if carry != 0 {
+                    z -= scalbn(1.0, q0)
+                }
+            }
+        }
+
+        // Check if recomputation is needed.
+        if z == 0.0 {
+            j = 0
+            i = jz - 1
+            while i >= jk {
+                j = j | iq[i]
+                i -= 1
+            }
+            if j == 0 {
+                // Need recomputation.
+                k = 1
+                while iq[jk - k] == 0 {
+                    k += 1
+                }
+                i = jz + 1
+                while i <= jz + k {
+                    f[jx + i] = TWO_OVER_PI[jv + i] as f64
+                    j = 0
+                    fw = 0.0
+                    while j <= jx {
+                        fw += x[j] * f[jx + i - j]
+                        j += 1
+                    }
+                    q[i] = fw
+                    i += 1
+                }
+                jz += k
+                recompute = true
+                continue
+            }
+        }
+
+        // Chop off zero terms.
+        if z == 0.0 {
+            jz -= 1
+            q0 -= 24
+            while iq[jz] == 0 {
+                jz -= 1
+                q0 -= 24
+            }
+        } else {
+            // Break z into 24-bit if necessary.
+            z = scalbn(z, -q0)
+            if z >= TWO24 {
+                fw = (TWON24 * z).floor()
+                iq[jz] = (z - TWO24 * fw) as i32
+                jz += 1
+                q0 += 24
+                iq[jz] = fw as i32
+            } else {
+                iq[jz] = z as i32
+            }
+        }
+
+        // Convert integer "bit" chunk to floating-point value.
+        fw = scalbn(1.0, q0)
+        i = jz
+        while i >= 0 {
+            q[i] = fw * (iq[i] as f64)
+            fw *= TWON24
+            i -= 1
+        }
+
+        // Compute PIo2[0,...,jp] * q[jz,...,0].
+        i = jz
+        while i >= 0 {
+            fw = 0.0
+            k = 0
+            while k <= jp && k <= jz - i {
+                fw += PI_OVER_2[k] * q[i + k]
+                k += 1
+            }
+            fq[jz - i] = fw
+            i -= 1
+        }
+
+        // Compress fq[] into y[].
+        if prec == 0 {
+            fw = 0.0
+            i = jz
+            while i >= 0 {
+                fw += fq[i]
+                i -= 1
+            }
+            y0 = if ih == 0 { fw } else { -fw }
+        } else if prec == 1 || prec == 2 {
+            fw = 0.0
+            i = jz
+            while i >= 0 {
+                fw += fq[i]
+                i -= 1
+            }
+            y0 = if ih == 0 { fw } else { -fw }
+            fw = fq[0] - fw
+            i = 1
+            while i <= jz {
+                fw += fq[i]
+                i += 1
+            }
+            y1 = if ih == 0 { fw } else { -fw }
+        } else if prec == 3 {
+            i = jz
+            while i > 0 {
+                fw = fq[i - 1] + fq[i]
+                fq[i] += fq[i - 1] - fw
+                fq[i - 1] = fw
+                i -= 1
+            }
+            i = jz
+            while i > 1 {
+                fw = fq[i - 1] + fq[i]
+                fq[i] += fq[i - 1] - fw
+                fq[i - 1] = fw
+                i -= 1
+            }
+            fw = 0.0
+            i = jz
+            while i >= 2 {
+                fw += fq[i]
+                i -= 1
+            }
+            if ih == 0 {
+                y0 = fq[0]
+                y1 = fq[1]
+            } else {
+                y0 = -fq[0]
+                y1 = -fq[1]
+            }
+        }
+    }
+    (n & 7, y0, y1)
+}
+
+// ---------------------------------------------------------------------------
+// Kernels.
+// ---------------------------------------------------------------------------
+
+fn kernel_sin(x: f64, y: f64, iy: i32) -> f64 {
+    let s1 = -1.66666666666666324348e-01
+    let s2 = 8.33333333332248946124e-03
+    let s3 = -1.98412698298579493134e-04
+    let s4 = 2.75573137070700676789e-06
+    let s5 = -2.50507602534068634195e-08
+    let s6 = 1.58969099521155010221e-10
+    let ix = get_high_word(x) & 0x7fffffff
+    if ix < 0x3e400000 && (x as i64) == 0 {
+        return x
+    }
+    let z = x * x
+    let v = z * x
+    let r = s2 + z * (s3 + z * (s4 + z * (s5 + z * s6)))
+    if iy == 0 {
+        x + v * (s1 + z * r)
+    } else {
+        x - (z * (0.5 * y - v * r) - y - v * s1)
+    }
+}
+
+fn kernel_cos(x: f64, y: f64) -> f64 {
+    let one = 1.00000000000000000000e+00
+    let c1 = 4.16666666666666019037e-02
+    let c2 = -1.38888888888741095749e-03
+    let c3 = 2.48015872894767294178e-05
+    let c4 = -2.75573143513906633035e-07
+    let c5 = 2.08757232129817482790e-09
+    let c6 = -1.13596475577881948265e-11
+    let ix = get_high_word(x) & 0x7fffffff
+    if ix < 0x3e400000 && (x as i64) == 0 {
+        return one
+    }
+    let z = x * x
+    let r = z * (c1 + z * (c2 + z * (c3 + z * (c4 + z * (c5 + z * c6)))))
+    if ix < 0x3fd33333 {
+        return one - (0.5 * z - (z * r - x * y))
+    }
+    let qx = if ix > 0x3fe90000 {
+        0.28125
+    } else {
+        f64::from_bits(((ix - 0x00200000) as u64) << 32)
+    }
+    let hz = 0.5 * z - qx
+    let a = one - qx
+    a - (hz - (z * r - x * y))
+}
+
+fn kernel_tan(x_in: f64, y_in: f64, iy: i32) -> f64 {
+    let one = 1.0
+    let pio4 = 7.85398163397448278999e-01
+    let pio4lo = 3.06161699786838301793e-17
+    let t = [
+        3.33333333333334091986e-01
+        1.33333333333201242699e-01
+        5.39682539762260521377e-02
+        2.18694882948595424599e-02
+        8.86323982359930005737e-03
+        3.59207910759131235356e-03
+        1.45620945432529025516e-03
+        5.88041240820264096874e-04
+        2.46463134818469906812e-04
+        7.81794442939557092300e-05
+        7.14072491382608190305e-05
+        -1.85586374855275456654e-05
+        2.59073051863633712884e-05
+        1.00000000000000000000e+00
+        7.85398163397448278999e-01
+        3.06161699786838301793e-17
+    ]
+    let hx = get_high_word(x_in) as i32
+    let ix = hx & 0x7fffffff
+    let mut x = x_in
+    let mut y = y_in
+    if ix < 0x3e300000 && (x as i64) == 0 {
+        if (ix | (get_low_word(x) as i32) | (iy + 1)) == 0 {
+            return one / x.abs()
+        }
+        if iy == 1 {
+            return x
+        }
+        let w = x + y
+        let mut z = w
+        z = set_low_word(z, 0)
+        let v = y - (z - x)
+        let a = -one / w
+        let mut tt = a
+        tt = set_low_word(tt, 0)
+        let s = one + tt * z
+        return tt + a * (s + tt * v)
+    }
+    if ix >= 0x3fe59428 {
+        if hx < 0 {
+            x = -x
+            y = -y
+        }
+        let z = pio4 - x
+        let w = pio4lo - y
+        x = z + w
+        y = 0.0
+    }
+    let z = x * x
+    let w = z * z
+    let mut r = t[1] + w * (t[3] + w * (t[5] + w * (t[7] + w * (t[9] + w * t[11]))))
+    let v = z * (t[2] + w * (t[4] + w * (t[6] + w * (t[8] + w * (t[10] + w * t[12])))))
+    let s = z * x
+    r = y + z * (s * (r + v) + y)
+    r += t[0] * s
+    let w2 = x + r
+    if ix >= 0x3fe59428 {
+        let v2 = iy as f64
+        let sign = (1 - ((hx >> 30) & 2)) as f64
+        return sign * (v2 - 2.0 * (x - (w2 * w2 / (w2 + v2) - r)))
+    }
+    if iy == 1 {
+        w2
+    } else {
+        let mut z2 = w2
+        z2 = set_low_word(z2, 0)
+        let v2 = r - (z2 - x)
+        let a = -1.0 / w2
+        let mut tt = a
+        tt = set_low_word(tt, 0)
+        let s2 = 1.0 + tt * z2
+        tt + a * (s2 + tt * v2)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public interface.
+// ---------------------------------------------------------------------------
+
+pub fn sin(x: f64) -> f64 {
+    if is_nan_or_inf(x) {
+        return f64::from_bits(NAN_BITS)
+    }
+    if x.abs() <= PI_OVER_4 {
+        return kernel_sin(x, 0.0, 0)
+    }
+    let n, y0, y1 = rem_pio2(x)
+    match n & 3 {
+        0 => kernel_sin(y0, y1, 1)
+        1 => kernel_cos(y0, y1)
+        2 => -kernel_sin(y0, y1, 1)
+        _ => -kernel_cos(y0, y1)
+    }
+}
+
+pub fn cos(x: f64) -> f64 {
+    if is_nan_or_inf(x) {
+        return f64::from_bits(NAN_BITS)
+    }
+    if x.abs() <= PI_OVER_4 {
+        return kernel_cos(x, 0.0)
+    }
+    let n, y0, y1 = rem_pio2(x)
+    match n & 3 {
+        0 => kernel_cos(y0, y1)
+        1 => -kernel_sin(y0, y1, 1)
+        2 => -kernel_cos(y0, y1)
+        _ => kernel_sin(y0, y1, 1)
+    }
+}
+
+pub fn tan(x: f64) -> f64 {
+    if is_nan_or_inf(x) {
+        return f64::from_bits(NAN_BITS)
+    }
+    if x.abs() <= PI_OVER_4 {
+        kernel_tan(x, 0.0, 1)
+    } else {
+        let n, y0, y1 = rem_pio2(x)
+        kernel_tan(y0, y1, 1 - ((n & 1) << 1))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inverse trigonometric functions.
+// ---------------------------------------------------------------------------
+
+const ATAN_HI: [f64; 4] = [
+    4.63647609000806093515e-01
+    7.85398163397448278999e-01
+    9.82793723247329054082e-01
+    1.57079632679489655800e+00
+]
+
+const ATAN_LO: [f64; 4] = [
+    2.26987774529616870924e-17
+    3.06161699786838301793e-17
+    1.39033110312309984516e-17
+    6.12323399573676603587e-17
+]
+
+const A_T: [f64; 11] = [
+    3.33333333333329318027e-01
+    -1.99999999998764832476e-01
+    1.42857142725034663711e-01
+    -1.11111104054623557880e-01
+    9.09088713343650656196e-02
+    -7.69187620504482999495e-02
+    6.66107313738753120669e-02
+    -5.83357013379057348645e-02
+    4.97687799461593236017e-02
+    -3.65315727442169155270e-02
+    1.62858201153657823623e-02
+]
+
+fn is_nan(x: f64) -> bool {
+    (x.to_bits() & 0x7fffffffffffffff) > 0x7ff0000000000000
+}
+
+pub fn asin(x: f64) -> f64 {
+    let huge = 1.0e+300
+    let one = 1.0
+    let pio4_hi = 7.85398163397448278999e-01
+    let pio2_hi = 1.57079632679489655800
+    let pio2_lo = 6.12323399573676603587e-17
+    let ps0 = 1.66666666666666657415e-01
+    let ps1 = -3.25565818622400915405e-01
+    let ps2 = 2.01212532134862925881e-01
+    let ps3 = -4.00555345006794114027e-02
+    let ps4 = 7.91534994289814532176e-04
+    let ps5 = 3.47933107596021167570e-05
+    let qs1 = -2.40339491173441421878e+00
+    let qs2 = 2.02094576023350569471e+00
+    let qs3 = -6.88283971605453293030e-01
+    let qs4 = 7.70381505559019352791e-02
+    let ix = (get_high_word(x) as i32) & 0x7fffffff
+    let absx = x.abs()
+    if absx >= 1.0 {
+        if absx == one {
+            return x * pio2_hi + x * pio2_lo
+        }
+        return f64::from_bits(NAN_BITS)
+    }
+    if absx < 0.5 {
+        if ix < 0x3e400000 {
+            if huge + x > one {
+                return x
+            }
+        } else {
+            let t = x * x
+            let p = t * (ps0 + t * (ps1 + t * (ps2 + t * (ps3 + t * (ps4 + t * ps5)))))
+            let q = 1.0 + t * (qs1 + t * (qs2 + t * (qs3 + t * qs4)))
+            let w = p / q
+            return x + x * w
+        }
+    }
+    let w = 1.0 - absx
+    let t = w * 0.5
+    let p = t * (ps0 + t * (ps1 + t * (ps2 + t * (ps3 + t * (ps4 + t * ps5)))))
+    let q = 1.0 + t * (qs1 + t * (qs2 + t * (qs3 + t * qs4)))
+    let s = t.sqrt()
+    if ix >= 0x3FEF3333 {
+        let w = p / q
+        let t = pio2_hi - (2.0 * (s + s * w) - pio2_lo)
+        return if x > 0.0 { t } else { -t }
+    }
+    let mut w2 = s
+    w2 = set_low_word(w2, 0)
+    let c = (t - w2 * w2) / (s + w2)
+    let r = p / q
+    let p2 = 2.0 * s * r - (pio2_lo - 2.0 * c)
+    let q2 = pio4_hi - 2.0 * w2
+    let t2 = pio4_hi - (p2 - q2)
+    if x > 0.0 { t2 } else { -t2 }
+}
+
+pub fn acos(x: f64) -> f64 {
+    let one = 1.0
+    let pi = 3.14159265358979311600
+    let pio2_hi = 1.57079632679489655800
+    let pio2_lo = 6.12323399573676603587e-17
+    let ps0 = 1.66666666666666657415e-01
+    let ps1 = -3.25565818622400915405e-01
+    let ps2 = 2.01212532134862925881e-01
+    let ps3 = -4.00555345006794114027e-02
+    let ps4 = 7.91534994289814532176e-04
+    let ps5 = 3.47933107596021167570e-05
+    let qs1 = -2.40339491173441421878e+00
+    let qs2 = 2.02094576023350569471e+00
+    let qs3 = -6.88283971605453293030e-01
+    let qs4 = 7.70381505559019352791e-02
+    let ix = (get_high_word(x) as i32) & 0x7fffffff
+    let absx = x.abs()
+    if absx >= 1.0 {
+        if absx == one {
+            if x > 0.0 {
+                return 0.0
+            }
+            return pi + 2.0 * pio2_lo
+        }
+        return f64::from_bits(NAN_BITS)
+    }
+    if absx < 0.5 {
+        if ix <= 0x3c600000 {
+            return pio2_hi + pio2_lo
+        }
+        let z = x * x
+        let p = z * (ps0 + z * (ps1 + z * (ps2 + z * (ps3 + z * (ps4 + z * ps5)))))
+        let q = one + z * (qs1 + z * (qs2 + z * (qs3 + z * qs4)))
+        let r = p / q
+        return pio2_hi - (x - (pio2_lo - x * r))
+    }
+    if x < 0.0 {
+        let z = (one + x) * 0.5
+        let p = z * (ps0 + z * (ps1 + z * (ps2 + z * (ps3 + z * (ps4 + z * ps5)))))
+        let q = one + z * (qs1 + z * (qs2 + z * (qs3 + z * qs4)))
+        let s = z.sqrt()
+        let r = p / q
+        let w = r * s - pio2_lo
+        return pi - 2.0 * (s + w)
+    }
+    let z = (one - x) * 0.5
+    let s = z.sqrt()
+    // Clear the low word so that df * df is exact.
+    let df = set_low_word(s, 0)
+    let c = (z - df * df) / (s + df)
+    let p = z * (ps0 + z * (ps1 + z * (ps2 + z * (ps3 + z * (ps4 + z * ps5)))))
+    let q = one + z * (qs1 + z * (qs2 + z * (qs3 + z * qs4)))
+    let r = p / q
+    let w = r * s + c
+    2.0 * (df + w)
+}
+
+pub fn atan(x_in: f64) -> f64 {
+    if is_nan(x_in) || x_in == 0.0 {
+        return x_in
+    }
+    let one = 1.0
+    let huge = 1.0e300
+    let ix = (get_high_word(x_in) as i32) & 0x7fffffff
+    let mut id = 0
+    let mut z = 0.0
+    let mut w = 0.0
+    let mut x = x_in
+    let x_is_neg = x < 0.0
+    if ix >= 0x44100000 {
+        if x > 0.0 {
+            return ATAN_HI[3] + ATAN_LO[3]
+        }
+        return -ATAN_HI[3] - ATAN_LO[3]
+    }
+    if ix < 0x3fdc0000 {
+        if ix < 0x3e200000 && huge + x > one {
+            return x
+        }
+        id = -1
+    } else {
+        x = x.abs()
+        if ix < 0x3ff30000 {
+            if ix < 0x3fe60000 {
+                id = 0
+                x = (2.0 * x - one) / (2.0 + x)
+            } else {
+                id = 1
+                x = (x - one) / (x + one)
+            }
+        } else if ix < 0x40038000 {
+            id = 2
+            x = (x - 1.5) / (one + 1.5 * x)
+        } else {
+            id = 3
+            x = -1.0 / x
+        }
+    }
+    z = x * x
+    w = z * z
+    let s1 = z * (A_T[0] + w * (A_T[2] + w * (A_T[4] + w * (A_T[6] + w * (A_T[8] + w * A_T[10])))))
+    let s2 = w * (A_T[1] + w * (A_T[3] + w * (A_T[5] + w * (A_T[7] + w * A_T[9]))))
+    if id < 0 {
+        return x - x * (s1 + s2)
+    }
+    z = ATAN_HI[id] - (x * (s1 + s2) - ATAN_LO[id] - x)
+    if x_is_neg { -z } else { z }
+}
+
+pub fn atan2(y: f64, x: f64) -> f64 {
+    if is_nan(x) || is_nan(y) {
+        return f64::from_bits(NAN_BITS)
+    }
+    let tiny = 1.0e-300
+    let zero = 0.0
+    let one = 1.0
+    let pi_o_4 = 7.8539816339744827900E-01
+    let pi_o_2 = 1.5707963267948965580E+00
+    let pi = 3.1415926535897931160E+00
+    let pi_lo = 1.2246467991473531772E-16
+    let hx = get_high_word(x) as i32
+    let hy = get_high_word(y) as i32
+    let ix = hx & 0x7fffffff
+    let iy = hy & 0x7fffffff
+    if x == one {
+        return atan(y)
+    }
+    let m = ((hy >> 31) & 1) | ((hx >> 30) & 2)
+    if y == 0.0 {
+        if m == 0 || m == 1 {
+            return y
+        }
+        if m == 2 {
+            return pi + tiny
+        }
+        return -pi - tiny
+    }
+    if x == 0.0 {
+        return if hy < 0 { -pi_o_2 - tiny } else { pi_o_2 + tiny }
+    }
+    if ix == 0x7ff00000 {
+        if iy == 0x7ff00000 {
+            if m == 0 {
+                return pi_o_4 + tiny
+            }
+            if m == 1 {
+                return -pi_o_4 - tiny
+            }
+            if m == 2 {
+                return 3.0 * pi_o_4 + tiny
+            }
+            return -3.0 * pi_o_4 - tiny
+        }
+        if m == 0 {
+            return zero
+        }
+        if m == 1 {
+            return -zero
+        }
+        if m == 2 {
+            return pi + tiny
+        }
+        return -pi - tiny
+    }
+    if iy == 0x7ff00000 {
+        return if hy < 0 { -pi_o_2 - tiny } else { pi_o_2 + tiny }
+    }
+    let k = (iy - ix) >> 20
+    let z, mm = if k > 60 {
+        (pi_o_2 + 0.5 * pi_lo, m & 1)
+    } else if hx < 0 && k < -60 {
+        (0.0, m)
+    } else {
+        (atan((y / x).abs()), m)
+    }
+    match mm {
+        0 => z
+        1 => -z
+        2 => pi - (z - pi_lo)
+        _ => z - pi_lo - pi
+    }
+}

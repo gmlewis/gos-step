@@ -1,0 +1,155 @@
+//! 21-breadboard-rail-clips — clips that hold breadboards to rails, generated
+//! for multiple breadboard sizes.
+//!
+//! Usage: gos run examples/21-breadboard-rail-clips/main.gos --width 54.5 > clip.step
+
+use std::env
+use std::process
+
+use step
+
+fn breadboard_rail_clip(
+    breadboard_width: f64
+    clip_height: f64
+    arm_thickness: f64
+    snap_clearance: f64
+    hook_depth: f64
+    rail_seat_diameter: f64
+    rail_seat_depth: f64
+) -> Vec<step::SceneNode> {
+    let hw = breadboard_width / 2.0
+
+    // Profile in XY plane (will be rotated to XZ)
+    // Inside is at Y in [0, clip_height]
+    // Bottom plate is at Y in [-arm_thickness, 0]
+    let profile = #[
+        (-hw - arm_thickness, clip_height + arm_thickness)
+        (-hw - arm_thickness, -arm_thickness)
+        (hw + arm_thickness, -arm_thickness)
+        (hw + arm_thickness, clip_height + arm_thickness)
+        (hw + arm_thickness - hook_depth, clip_height + arm_thickness)
+        (hw + arm_thickness - hook_depth, clip_height)
+        (hw + snap_clearance, clip_height)
+        (hw + snap_clearance, 0.0)
+        (-hw - snap_clearance, 0.0)
+        (-hw - snap_clearance, clip_height)
+        (-hw - arm_thickness + hook_depth, clip_height)
+        (-hw - arm_thickness + hook_depth, clip_height + arm_thickness)
+    ]
+    let clip_length = 15.0
+    let main_clip = step::extrude(step::profile(profile), clip_length)
+        .named("main-clip")
+        .colored(step::CYAN)
+        .turned_x(90.0)
+        .moved(0.0, clip_length / 2.0, 0.0)
+    let mut nodes = #[main_clip]
+    if rail_seat_diameter > 0.0 && rail_seat_depth > 0.0 {
+        // Two mounting pegs for stability
+        let seat_dist = clip_length / 2.0 - rail_seat_diameter
+        let seat_locs = #[(-seat_dist, 0.0), (seat_dist, 0.0)]
+        for i in 0..seat_locs.len() {
+            let sy, _ = seat_locs[i] // Centered along World Y (clip length)
+            let seat = step::tube(rail_seat_diameter, 0.0, rail_seat_depth)
+                .named(f"rail-seat-{i}")
+                .colored(step::BLUE)
+                .moved(0.0, sy, -arm_thickness - rail_seat_depth)
+            nodes.push(seat)
+        }
+    }
+    nodes
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "width": step::opt_double(54.5, help: "Breadboard width (mm)", min: Some(10.0))
+        "height": step::opt_double(10.0, help: "Clip side height (mm)", min: Some(2.0))
+        "armThickness": step::opt_double(2.5, help: "Thickness of the clip arms (mm)", min: Some(1.0))
+        "snapClearance": step::opt_double(0.2, help: "Clearance for the snap fit (mm)")
+        "hookDepth": step::opt_double(2.0, help: "Depth of the retention hook (mm)", min: Some(0.5))
+        "seatDiameter": step::opt_double(4.0, help: "Diameter of the rail mounting seat (mm)", min: Some(0.0))
+        "seatDepth": step::opt_double(2.0, help: "Depth of the rail mounting seat (mm)", min: Some(0.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "21-breadboard-rail-clips"
+        "Generate a breadboard rail clip STEP model."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let width = match args.double("width") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let height = match args.double("height") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let arm_thickness = match args.double("armThickness") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let snap_clearance = match args.double("snapClearance") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let hook_depth = match args.double("hookDepth") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let seat_diameter = match args.double("seatDiameter") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let seat_depth = match args.double("seatDepth") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+    let nodes = breadboard_rail_clip(
+        width
+        height
+        arm_thickness
+        snap_clearance
+        hook_depth
+        seat_diameter
+        seat_depth
+    )
+    let mut design = step::design(name: "breadboard-rail-clip", documentation: args.documentation())
+    for node in nodes {
+        design = design.add(node.moved(tx, ty, tz))
+    }
+    let rotated = design.rotate_x(-90.0)
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => rotated.write_blender_python(Some(path))?
+            None => rotated.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

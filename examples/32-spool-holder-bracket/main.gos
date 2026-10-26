@@ -1,0 +1,138 @@
+//! 32-spool-holder-bracket
+//!
+//! A bracket that adapts to multiple spool widths and axle diameters.
+//!
+//! Usage (stdout):
+//!   ./run-example.sh 32 > bracket.step
+//!
+//! Usage (write file):
+//!   ./run-example.sh 32 -o bracket.step
+
+use std::env
+use std::math
+use std::process
+
+use step
+
+fn reverse(pts: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "baseLength": step::opt_double(80.0, help: "Base plate length (mm)", min: Some(0.0), min_exclusive: true)
+        "baseThickness": step::opt_double(10.0, help: "Base plate thickness (mm)", min: Some(0.0), min_exclusive: true)
+        "armHeight": step::opt_double(120.0, help: "Arm height from base (mm)", min: Some(0.0), min_exclusive: true)
+        "armWidth": step::opt_double(30.0, help: "Arm width / extrusion depth (mm)", min: Some(0.0), min_exclusive: true)
+        "armBaseThickness": step::opt_double(40.0, help: "Arm thickness at base (mm)", min: Some(0.0), min_exclusive: true)
+        "armTopThickness": step::opt_double(25.0, help: "Arm thickness at top (mm)", min: Some(0.0), min_exclusive: true)
+        "axleDia": step::opt_double(20.0, help: "Axle diameter (mm)", min: Some(0.0), min_exclusive: true)
+        "holeDia": step::opt_double(6.0, help: "Mounting hole diameter (mm)", min: Some(0.0), min_exclusive: true)
+        "holeSpacing": step::opt_double(60.0, help: "Mounting hole spacing (mm)", min: Some(0.0), min_exclusive: true)
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "32-spool-holder-bracket"
+        "Generate a spool holder bracket STEP model."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let base_length = args.double_or("baseLength", 80.0)
+    let base_thickness = args.double_or("baseThickness", 10.0)
+    let arm_height = args.double_or("armHeight", 120.0)
+    let arm_width = args.double_or("armWidth", 30.0)
+    let arm_base_thickness = args.double_or("armBaseThickness", 40.0)
+    let arm_top_thickness = args.double_or("armTopThickness", 25.0)
+    let axle_dia = args.double_or("axleDia", 20.0)
+    let hole_dia = args.double_or("holeDia", 6.0)
+    let hole_spacing = args.double_or("holeSpacing", 60.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    // Validate parameters
+    if arm_top_thickness < axle_dia {
+        eprintln("error: armTopThickness must be >= axleDia")
+        process::exit(1)
+    }
+    if hole_spacing >= base_length {
+        eprintln("error: holeSpacing must be < baseLength")
+        process::exit(1)
+    }
+    if arm_base_thickness >= hole_spacing - hole_dia {
+        eprintln("error: armBaseThickness must be < holeSpacing - holeDia to avoid blocking holes")
+        process::exit(1)
+    }
+
+    // 1. Base (Top view extrusion)
+    let base_outer = step::centered_rect(base_length, arm_width)
+    let hole_profile = reverse(step::circle(hole_dia))
+    let base_holes = #[
+        step::translate_pts(hole_profile, -hole_spacing / 2.0, 0.0)
+        step::translate_pts(hole_profile, hole_spacing / 2.0, 0.0)
+    ]
+    let base = step::extrude(step::profile(base_outer).add_all_holes(base_holes), base_thickness)
+        .named("base")
+        .colored(step::rgb(0.2, 0.4, 0.8)) // Beautiful blue
+        .moved(tx, ty, tz)
+
+    // 2. Arm (Side view extrusion)
+    let arm_z0 = base_thickness
+    let arm_z1 = base_thickness + arm_height
+    let mut arm_pts: Vec<(f64, f64)> = #[]
+    arm_pts.push((-arm_base_thickness / 2.0, arm_z0))
+    arm_pts.push((arm_base_thickness / 2.0, arm_z0))
+    arm_pts.push((arm_top_thickness / 2.0, arm_z1))
+
+    // Add cradle arc (concave)
+    // arc(dia, PI, 2*PI).rev() goes from (R, 0) to (-R, 0) through (0, -R)
+    let arc_pts = reverse(step::arc(axle_dia, math::PI, 2.0 * math::PI))
+    for pt in arc_pts {
+        arm_pts.push((pt.0, pt.1 + arm_z1))
+    }
+    arm_pts.push((-arm_top_thickness / 2.0, arm_z1))
+    let arm = step::extrude(step::profile(arm_pts), arm_width)
+        .named("arm")
+        .colored(step::rgb(0.2, 0.8, 0.8)) // Beautiful cyan
+        .turned_x(90.0)
+        .moved(tx, ty + arm_width / 2.0, tz) // center it on base
+    let design = step::design(name: "spool-holder-bracket", documentation: args.documentation())
+        .add(base)
+        .add(arm)
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(_) => design.write_blender_python(bpy_path)?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

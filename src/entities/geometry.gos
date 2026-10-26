@@ -1,0 +1,1091 @@
+//! STEP entity models: geometry family.
+//!
+//! Ported 1:1 from the reference implementation; the
+//! serialization (including spacing quirks) is the contract.
+
+use crate::entity::Entity
+use crate::fmt::{fmt_num, step_str}
+use crate::ids::{Ref}
+
+fn step_str_or_dollar(s: String) -> String {
+    if s == "$" { "$" } else { step_str(s) }
+}
+
+fn bool_to_step(b: bool) -> String {
+    if b { ".T." } else { ".F." }
+}
+
+// Represents an AXIS1_PLACEMENT entity.
+// Example:
+//   AXIS1_PLACEMENT('name', #10, #20)
+// where #10 is a CARTESIAN_POINT and #20 is an optional DIRECTION.
+pub struct Axis1Placement {
+    pub name: String
+    pub location: Ref
+    pub axis: Option<Ref>
+}
+
+impl Axis1Placement {
+    pub fn new(name: String, location: Ref, axis: Option<Ref> = None) -> Axis1Placement {
+        Axis1Placement { name: name, location: location, axis: axis }
+    }
+}
+
+impl Entity for Axis1Placement {
+    fn to_step(self) -> String {
+        let loc_str = f"#{self.location.id.value}"
+        let axis_str = match self.axis {
+            Some(r) => f"#{r.id.value}"
+            None => "$"
+        }
+        f"AXIS1_PLACEMENT({step_str(self.name)},{loc_str},{axis_str})"
+    }
+}
+
+// Represents an AXIS2_PLACEMENT_2D entity.
+// Example:
+//   AXIS2_PLACEMENT_2D('name', #10, #20)
+// where #10 is a CARTESIAN_POINT and #20 is an optional DIRECTION.
+pub struct Axis2Placement2D {
+    pub name: String
+    pub location: Ref
+    pub ref_direction: Option<Ref>
+}
+
+impl Axis2Placement2D {
+    pub fn new(name: String, location: Ref, ref_direction: Option<Ref> = None) -> Axis2Placement2D {
+        Axis2Placement2D { name: name, location: location, ref_direction: ref_direction }
+    }
+}
+
+impl Entity for Axis2Placement2D {
+    fn to_step(self) -> String {
+        let loc_str = f"#{self.location.id.value}"
+        let dir_str = match self.ref_direction {
+            Some(r) => f"#{r.id.value}"
+            None => "$"
+        }
+        f"AXIS2_PLACEMENT_2D({step_str(self.name)},{loc_str},{dir_str})"
+    }
+}
+
+// Represents an AXIS2_PLACEMENT_3D entity.
+pub struct Axis2Placement3D {
+    pub name: String
+    pub location: Ref
+    pub axis: Ref
+    pub ref_direction: Ref
+}
+
+impl Axis2Placement3D {
+    pub fn new(name: String, location: Ref, axis: Ref, ref_direction: Ref) -> Axis2Placement3D {
+        Axis2Placement3D { name: name, location: location, axis: axis, ref_direction: ref_direction }
+    }
+}
+
+fn ref_to_step(r: Ref) -> String {
+    // Access the `id` field from the Ref struct
+    f"#{r.id.value}"
+}
+
+// Implement the core trait.
+impl Entity for Axis2Placement3D {
+    fn to_step(self) -> String {
+        let loc = ref_to_step(self.location)
+        let ax = ref_to_step(self.axis)
+        let ref_dir = ref_to_step(self.ref_direction)
+        f"AXIS2_PLACEMENT_3D({step_str(self.name)},{loc}, {ax}, {ref_dir})"
+    }
+}
+
+// Represents a BLOCK entity (CSG primitive).
+// Example:
+//   BLOCK('name', #10, 10.0, 20.0, 30.0)
+pub struct Block {
+    pub name: String
+    pub position: Ref
+    pub x: f64
+    pub y: f64
+    pub z: f64
+}
+
+impl Block {
+    pub fn new(name: String, position: Ref, x: f64, y: f64, z: f64) -> Block {
+        Block { name: name, position: position, x: x, y: y, z: z }
+    }
+}
+
+impl Entity for Block {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"BLOCK({step_str(self.name)},{pos_str},{fmt_num(self.x)},{fmt_num(self.y)},{fmt_num(self.z)})"
+    }
+}
+
+// Represents a BOOLEAN_OPERATOR enumeration in STEP.
+pub enum BooleanOperator {
+    Union
+    Intersection
+    Difference
+}
+
+impl Entity for BooleanOperator {
+    fn to_step(self) -> String {
+        match self {
+            BooleanOperator::Union => ".UNION."
+            BooleanOperator::Intersection => ".INTERSECTION."
+            BooleanOperator::Difference => ".DIFFERENCE."
+        }
+    }
+}
+
+impl BooleanOperator {
+    pub fn from_string(s: String) -> Option<BooleanOperator> {
+        match s {
+            ".UNION." => Some(BooleanOperator::Union)
+            ".INTERSECTION." => Some(BooleanOperator::Intersection)
+            ".DIFFERENCE." => Some(BooleanOperator::Difference)
+            _ => None
+        }
+    }
+}
+
+// Represents a BOOLEAN_RESULT entity.
+// Example:
+//   BOOLEAN_RESULT('name', .UNION., #10, #20)
+pub struct BooleanResult {
+    pub name: String
+    pub operator: BooleanOperator
+    pub first_operand: Ref
+    pub second_operand: Ref
+}
+
+impl BooleanResult {
+    pub fn new(name: String, operator: BooleanOperator, first_operand: Ref, second_operand: Ref) -> BooleanResult {
+        BooleanResult { name: name, operator: operator, first_operand: first_operand, second_operand: second_operand }
+    }
+}
+
+impl Entity for BooleanResult {
+    fn to_step(self) -> String {
+        let op_str = self.operator.to_step()
+        let op1_str = f"#{self.first_operand.id.value}"
+        let op2_str = f"#{self.second_operand.id.value}"
+        f"BOOLEAN_RESULT({step_str(self.name)},{op_str},{op1_str},{op2_str})"
+    }
+}
+
+// Represents a B_SPLINE_CURVE entity.
+// Example:
+//   B_SPLINE_CURVE('name', 3, (#10, #11, #12, #13), .UNSPECIFIED., .F., .F.)
+pub struct BSplineCurve {
+    pub name: String
+    pub degree: i64
+    pub control_points: Vec<Ref>
+    pub curve_form: String
+    pub closed_curve: bool
+    pub self_intersect: bool
+}
+
+impl BSplineCurve {
+    pub fn new(name: String, degree: i64, control_points: Vec<Ref>, curve_form: String, closed_curve: bool, self_intersect: bool) -> BSplineCurve {
+        BSplineCurve { name: name, degree: degree, control_points: control_points, curve_form: curve_form, closed_curve: closed_curve, self_intersect: self_intersect }
+    }
+}
+
+impl Entity for BSplineCurve {
+    fn to_step(self) -> String {
+        let cps_str = self.control_points.map(|r| { f"#{r.id.value}" }).join(",")
+        let closed_str = bool_to_step(self.closed_curve)
+        let si_str = bool_to_step(self.self_intersect)
+        f"B_SPLINE_CURVE({step_str_or_dollar(self.name)},{self.degree},({cps_str}),{self.curve_form},{closed_str},{si_str})"
+    }
+}
+
+// Represents a B_SPLINE_CURVE_WITH_KNOTS entity.
+// Example from MachineContactMedium.step:
+//   B_SPLINE_CURVE_WITH_KNOTS('',3,(#875,#876,...),.UNSPECIFIED.,.F.,.F.,(4,3,...),(0.,...),.UNSPECIFIED.)
+//
+// Notes:
+// - We store knot values as raw strings to preserve STEP formatting.
+// - Control points are currently typed as UnknownEntity refs.
+pub struct BSplineCurveWithKnots {
+    pub name: String
+    pub degree: i64
+    pub control_points: Vec<Ref>
+    pub curve_form: String
+    pub closed_curve: bool
+    pub self_intersect: bool
+    pub knot_multiplicities: Vec<i64>
+    pub knots: Vec<String>
+    pub knot_spec: String
+}
+
+impl BSplineCurveWithKnots {
+    pub fn new(name: String, degree: i64, control_points: Vec<Ref>, curve_form: String, closed_curve: bool, self_intersect: bool, knot_multiplicities: Vec<i64>, knots: Vec<String>, knot_spec: String) -> BSplineCurveWithKnots {
+        BSplineCurveWithKnots { name: name, degree: degree, control_points: control_points, curve_form: curve_form, closed_curve: closed_curve, self_intersect: self_intersect, knot_multiplicities: knot_multiplicities, knots: knots, knot_spec: knot_spec }
+    }
+}
+
+impl Entity for BSplineCurveWithKnots {
+    fn to_step(self) -> String {
+        let cps_str = self.control_points.map(|r| { f"#{r.id.value}" }).join(",")
+        let mults_str = self.knot_multiplicities.map(|i| { f"{i}" }).join(",")
+        let knots_str = self.knots.join(",")
+        let closed_str = bool_to_step(self.closed_curve)
+        let si_str = bool_to_step(self.self_intersect)
+        f"B_SPLINE_CURVE_WITH_KNOTS({step_str_or_dollar(self.name)},{self.degree},({cps_str}),{self.curve_form},{closed_str},{si_str},({mults_str}),({knots_str}),{self.knot_spec})"
+    }
+}
+
+// Represents a B_SPLINE_SURFACE_WITH_KNOTS entity.
+// In STEP Part 21 files this most commonly appears as a part of a complex
+// instance together with B_SPLINE_SURFACE and (optionally) RATIONAL_B_SPLINE_SURFACE.
+// Example (from MachineContactMedium.step):
+//   B_SPLINE_SURFACE_WITH_KNOTS((3,3),(3,2,3),(-0.16,...),(-3.14,...),.UNSPECIFIED.)
+//
+// Notes:
+// - We store knot values as raw strings to preserve STEP formatting.
+pub struct BSplineSurfaceWithKnots {
+    pub u_multiplicities: Vec<i64>
+    pub v_multiplicities: Vec<i64>
+    pub u_knots: Vec<String>
+    pub v_knots: Vec<String>
+    pub knot_spec: String
+}
+
+impl BSplineSurfaceWithKnots {
+    pub fn new(u_multiplicities: Vec<i64>, v_multiplicities: Vec<i64>, u_knots: Vec<String>, v_knots: Vec<String>, knot_spec: String) -> BSplineSurfaceWithKnots {
+        BSplineSurfaceWithKnots { u_multiplicities: u_multiplicities, v_multiplicities: v_multiplicities, u_knots: u_knots, v_knots: v_knots, knot_spec: knot_spec }
+    }
+}
+
+impl Entity for BSplineSurfaceWithKnots {
+    fn to_step(self) -> String {
+        let u_mults_str = self.u_multiplicities.map(|i| { f"{i}" }).join(",")
+        let v_mults_str = self.v_multiplicities.map(|i| { f"{i}" }).join(",")
+        let u_knots_str = self.u_knots.join(",")
+        let v_knots_str = self.v_knots.join(",")
+        f"B_SPLINE_SURFACE_WITH_KNOTS(({u_mults_str}),({v_mults_str}),({u_knots_str}),({v_knots_str}),{self.knot_spec})"
+    }
+}
+
+// Represents a B_SPLINE_SURFACE entity.
+// Common form (as part of a complex surface instance):
+//   B_SPLINE_SURFACE(2,2,((#1,#2,#3),(#4,#5,#6)),.UNSPECIFIED.,.F.,.F.,.F.)
+//
+// Notes:
+// - Control points are stored as UnknownEntity refs.
+pub struct BSplineSurface {
+    pub u_degree: i64
+    pub v_degree: i64
+    pub control_points_list: Vec<Vec<Ref>>
+    pub surface_form: String
+    pub u_closed: bool
+    pub v_closed: bool
+    pub self_intersect: bool
+}
+
+impl BSplineSurface {
+    pub fn new(u_degree: i64, v_degree: i64, control_points_list: Vec<Vec<Ref>>, surface_form: String, u_closed: bool, v_closed: bool, self_intersect: bool) -> BSplineSurface {
+        BSplineSurface { u_degree: u_degree, v_degree: v_degree, control_points_list: control_points_list, surface_form: surface_form, u_closed: u_closed, v_closed: v_closed, self_intersect: self_intersect }
+    }
+}
+
+impl Entity for BSplineSurface {
+    fn to_step(self) -> String {
+        let row_strs = self.control_points_list
+            .map(|row| {
+                let cps_str = row.map(|r| { f"#{r.id.value}" }).join(",")
+                f"({cps_str})"
+            })
+            .join(",")
+        let u_closed_str = bool_to_step(self.u_closed)
+        let v_closed_str = bool_to_step(self.v_closed)
+        let si_str = bool_to_step(self.self_intersect)
+        f"B_SPLINE_SURFACE({self.u_degree},{self.v_degree},({row_strs}),{self.surface_form},{u_closed_str},{v_closed_str},{si_str})"
+    }
+}
+
+// Represents a CARTESIAN_POINT entity.
+// Note the direct mapping of properties from the TS class.
+pub struct CartesianPoint {
+    pub name: String
+    pub coordinates: Vec<f64>
+}
+
+impl CartesianPoint {
+    pub fn new(name: String, coordinates: Vec<f64>) -> CartesianPoint {
+        CartesianPoint { name: name, coordinates: coordinates }
+    }
+}
+
+// Implement the core trait.
+impl Entity for CartesianPoint {
+    fn to_step(self) -> String {
+        let coords_str = self.coordinates.map(fmt_num).join(",")
+        f"CARTESIAN_POINT({step_str(self.name)},({coords_str}))"
+    }
+}
+
+// Represents a CIRCLE entity.
+// Example from MachineContactMedium.step:
+//   CIRCLE('',#600,0.435)
+pub struct Circle {
+    pub name: String
+    pub position: Ref
+    pub radius_literal: String
+}
+
+impl Circle {
+    pub fn new(name: String, position: Ref, radius_literal: String) -> Circle {
+        Circle { name: name, position: position, radius_literal: radius_literal }
+    }
+}
+
+impl Entity for Circle {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"CIRCLE({step_str_or_dollar(self.name)},{pos_str},{self.radius_literal})"
+    }
+}
+
+// Represents a transition_code enumeration in STEP.
+pub enum TransitionCode {
+    Discontinuous
+    Continuous
+    ContSameGradient
+    ContSameGradientSameCurvature
+}
+
+impl Entity for TransitionCode {
+    fn to_step(self) -> String {
+        match self {
+            TransitionCode::Discontinuous => ".DISCONTINUOUS."
+            TransitionCode::Continuous => ".CONTINUOUS."
+            TransitionCode::ContSameGradient => ".CONTSAMEGRADIENT."
+            TransitionCode::ContSameGradientSameCurvature => ".CONTSAMEGRADIENTSAMECURVATURE."
+        }
+    }
+}
+
+impl TransitionCode {
+    pub fn from_string(s: String) -> Option<TransitionCode> {
+        match s {
+            ".DISCONTINUOUS." => Some(TransitionCode::Discontinuous)
+            ".CONTINUOUS." => Some(TransitionCode::Continuous)
+            ".CONTSAMEGRADIENT." => Some(TransitionCode::ContSameGradient)
+            ".CONTSAMEGRADIENTSAMECURVATURE." => Some(TransitionCode::ContSameGradientSameCurvature)
+            _ => None
+        }
+    }
+}
+
+// Represents a COMPOSITE_CURVE_SEGMENT entity.
+// Example:
+//   COMPOSITE_CURVE_SEGMENT(.CONTINUOUS., .T., #10)
+// where #10 is a curve.
+pub struct CompositeCurveSegment {
+    pub transition: TransitionCode
+    pub same_sense: bool
+    pub parent_curve: Ref
+}
+
+impl CompositeCurveSegment {
+    pub fn new(transition: TransitionCode, same_sense: bool, parent_curve: Ref) -> CompositeCurveSegment {
+        CompositeCurveSegment { transition: transition, same_sense: same_sense, parent_curve: parent_curve }
+    }
+}
+
+impl Entity for CompositeCurveSegment {
+    fn to_step(self) -> String {
+        let trans_str = self.transition.to_step()
+        let sense_str = bool_to_step(self.same_sense)
+        let curve_str = f"#{self.parent_curve.id.value}"
+        f"COMPOSITE_CURVE_SEGMENT({trans_str},{sense_str},{curve_str})"
+    }
+}
+
+// Represents a COMPOSITE_CURVE entity.
+// Example:
+//   COMPOSITE_CURVE('name', (#10, #20), .F.)
+// where #10, #20 are COMPOSITE_CURVE_SEGMENTs.
+pub struct CompositeCurve {
+    pub name: String
+    pub segments: Vec<Ref>
+    pub self_intersect: bool
+}
+
+impl CompositeCurve {
+    pub fn new(name: String, segments: Vec<Ref>, self_intersect: bool) -> CompositeCurve {
+        CompositeCurve { name: name, segments: segments, self_intersect: self_intersect }
+    }
+}
+
+impl Entity for CompositeCurve {
+    fn to_step(self) -> String {
+        let segments_str = self.segments.map(|r| { f"#{r.id.value}" }).join(",")
+        let si_str = bool_to_step(self.self_intersect)
+        f"COMPOSITE_CURVE({step_str(self.name)},({segments_str}),{si_str})"
+    }
+}
+
+// Represents a CONICAL_SURFACE entity.
+// Example from MachineContactMedium.step:
+//   CONICAL_SURFACE('',#611,0.3500599520011,0.140686945962564)
+pub struct ConicalSurface {
+    pub name: String
+    pub position: Ref
+    pub radius_literal: String
+    pub semi_angle_literal: String
+}
+
+impl ConicalSurface {
+    pub fn new(name: String, position: Ref, radius_literal: String, semi_angle_literal: String) -> ConicalSurface {
+        ConicalSurface { name: name, position: position, radius_literal: radius_literal, semi_angle_literal: semi_angle_literal }
+    }
+}
+
+impl Entity for ConicalSurface {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"CONICAL_SURFACE({step_str_or_dollar(self.name)},{pos_str},{self.radius_literal},{self.semi_angle_literal})"
+    }
+}
+
+// Represents a CSG_SOLID entity.
+// Example:
+//   CSG_SOLID('name', #10)
+// where #10 is a BOOLEAN_RESULT or a CSG_PRIMITIVE.
+pub struct CsgSolid {
+    pub name: String
+    pub tree_root_expression: Ref
+}
+
+impl CsgSolid {
+    pub fn new(name: String, tree_root_expression: Ref) -> CsgSolid {
+        CsgSolid { name: name, tree_root_expression: tree_root_expression }
+    }
+}
+
+impl Entity for CsgSolid {
+    fn to_step(self) -> String {
+        let root_str = f"#{self.tree_root_expression.id.value}"
+        f"CSG_SOLID({step_str(self.name)},{root_str})"
+    }
+}
+
+// Represents a CYLINDRICAL_SURFACE entity.
+// Example from MachineContactMedium.step:
+//   CYLINDRICAL_SURFACE('',#602,0.435)
+pub struct CylindricalSurface {
+    pub name: String
+    pub position: Ref
+    pub radius_literal: String
+}
+
+impl CylindricalSurface {
+    pub fn new(name: String, position: Ref, radius_literal: String) -> CylindricalSurface {
+        CylindricalSurface { name: name, position: position, radius_literal: radius_literal }
+    }
+}
+
+impl Entity for CylindricalSurface {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"CYLINDRICAL_SURFACE({step_str_or_dollar(self.name)},{pos_str},{self.radius_literal})"
+    }
+}
+
+// Represents a DIRECTION entity.
+pub struct Direction {
+    pub name: String
+    pub ratios: Vec<f64>
+}
+
+impl Direction {
+    pub fn new(name: String, ratios: Vec<f64>) -> Direction {
+        Direction { name: name, ratios: ratios }
+    }
+}
+
+// Implement the core trait.
+impl Entity for Direction {
+    fn to_step(self) -> String {
+        let ratios_str = self.ratios.map(fmt_num).join(",")
+        f"DIRECTION({step_str(self.name)},({ratios_str}))"
+    }
+}
+
+// Represents an ELLIPSE entity.
+// Example from MachineContactMedium.step:
+//   ELLIPSE('',#613,0.1233...,0.1177...)
+pub struct Ellipse {
+    pub name: String
+    pub position: Ref
+    pub semi_axis_1_literal: String
+    pub semi_axis_2_literal: String
+}
+
+impl Ellipse {
+    pub fn new(name: String, position: Ref, semi_axis_1_literal: String, semi_axis_2_literal: String) -> Ellipse {
+        Ellipse { name: name, position: position, semi_axis_1_literal: semi_axis_1_literal, semi_axis_2_literal: semi_axis_2_literal }
+    }
+}
+
+impl Entity for Ellipse {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"ELLIPSE({step_str_or_dollar(self.name)},{pos_str},{self.semi_axis_1_literal},{self.semi_axis_2_literal})"
+    }
+}
+
+// Represents a HALF_SPACE_SOLID entity.
+// Example:
+//   HALF_SPACE_SOLID('name', #10, .T.)
+pub struct HalfSpaceSolid {
+    pub name: String
+    pub base_surface: Ref
+    pub agreement_flag: bool
+}
+
+impl HalfSpaceSolid {
+    pub fn new(name: String, base_surface: Ref, agreement_flag: bool) -> HalfSpaceSolid {
+        HalfSpaceSolid { name: name, base_surface: base_surface, agreement_flag: agreement_flag }
+    }
+}
+
+impl Entity for HalfSpaceSolid {
+    fn to_step(self) -> String {
+        let surf_str = f"#{self.base_surface.id.value}"
+        let flag_str = bool_to_step(self.agreement_flag)
+        f"HALF_SPACE_SOLID({step_str(self.name)},{surf_str},{flag_str})"
+    }
+}
+
+// Represents a HYPERBOLA entity.
+// Example:
+//   HYPERBOLA('name', #10, 10.0, 5.0)
+pub struct Hyperbola {
+    pub name: String
+    pub position: Ref
+    pub semi_axis: f64
+    pub semi_imag_axis: f64
+}
+
+impl Hyperbola {
+    pub fn new(name: String, position: Ref, semi_axis: f64, semi_imag_axis: f64) -> Hyperbola {
+        Hyperbola { name: name, position: position, semi_axis: semi_axis, semi_imag_axis: semi_imag_axis }
+    }
+}
+
+impl Entity for Hyperbola {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"HYPERBOLA({step_str(self.name)},{pos_str},{fmt_num(self.semi_axis)},{fmt_num(self.semi_imag_axis)})"
+    }
+}
+
+// Represents a LINE entity.
+pub struct Line {
+    pub name: String
+    pub pnt: Ref
+    pub dir: Ref
+}
+
+impl Line {
+    pub fn new(name: String, pnt: Ref, dir: Ref) -> Line {
+        Line { name: name, pnt: pnt, dir: dir }
+    }
+}
+
+impl Entity for Line {
+    fn to_step(self) -> String {
+        let pnt = f"#{self.pnt.id.value}"
+        let dir = f"#{self.dir.id.value}"
+        f"LINE({step_str(self.name)},{pnt},{dir})"
+    }
+}
+
+// Represents an OFFSET_CURVE_3D entity.
+// Example:
+//   OFFSET_CURVE_3D('name', #10, 5.0, #20)
+pub struct OffsetCurve3D {
+    pub name: String
+    pub basis_curve: Ref
+    pub distance: f64
+    pub ref_direction: Ref
+}
+
+impl OffsetCurve3D {
+    pub fn new(name: String, basis_curve: Ref, distance: f64, ref_direction: Ref) -> OffsetCurve3D {
+        OffsetCurve3D { name: name, basis_curve: basis_curve, distance: distance, ref_direction: ref_direction }
+    }
+}
+
+impl Entity for OffsetCurve3D {
+    fn to_step(self) -> String {
+        let basis_str = f"#{self.basis_curve.id.value}"
+        let dir_str = f"#{self.ref_direction.id.value}"
+        f"OFFSET_CURVE_3D({step_str(self.name)},{basis_str},{fmt_num(self.distance)},{dir_str})"
+    }
+}
+
+// Represents an OFFSET_SURFACE entity.
+// Example:
+//   OFFSET_SURFACE('name', #10, 5.0, .F.)
+pub struct OffsetSurface {
+    pub name: String
+    pub basis_surface: Ref
+    pub distance: f64
+    pub self_intersect: bool
+}
+
+impl OffsetSurface {
+    pub fn new(name: String, basis_surface: Ref, distance: f64, self_intersect: bool) -> OffsetSurface {
+        OffsetSurface { name: name, basis_surface: basis_surface, distance: distance, self_intersect: self_intersect }
+    }
+}
+
+impl Entity for OffsetSurface {
+    fn to_step(self) -> String {
+        let basis_str = f"#{self.basis_surface.id.value}"
+        let si_str = bool_to_step(self.self_intersect)
+        f"OFFSET_SURFACE({step_str(self.name)},{basis_str},{fmt_num(self.distance)},{si_str})"
+    }
+}
+
+// Represents a PARABOLA entity.
+// Example:
+//   PARABOLA('name', #10, 5.0)
+pub struct Parabola {
+    pub name: String
+    pub position: Ref
+    pub focal_dist: f64
+}
+
+impl Parabola {
+    pub fn new(name: String, position: Ref, focal_dist: f64) -> Parabola {
+        Parabola { name: name, position: position, focal_dist: focal_dist }
+    }
+}
+
+impl Entity for Parabola {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"PARABOLA({step_str(self.name)},{pos_str},{fmt_num(self.focal_dist)})"
+    }
+}
+
+// Represents a PLANE entity.
+pub struct Plane {
+    pub name: String
+    pub position: Ref
+}
+
+impl Plane {
+    pub fn new(name: String, position: Ref) -> Plane {
+        Plane { name: name, position: position }
+    }
+}
+
+impl Entity for Plane {
+    fn to_step(self) -> String {
+        let pos = f"#{self.position.id.value}"
+        f"PLANE({step_str(self.name)},{pos})"
+    }
+}
+
+// Represents a POLYLINE entity.
+// Example:
+//   POLYLINE('name', (#10, #20, #30))
+pub struct Polyline {
+    pub name: String
+    pub points: Vec<Ref>
+}
+
+impl Polyline {
+    pub fn new(name: String, points: Vec<Ref>) -> Polyline {
+        Polyline { name: name, points: points }
+    }
+}
+
+impl Entity for Polyline {
+    fn to_step(self) -> String {
+        let pts_str = self.points.map(|r| { f"#{r.id.value}" }).join(",")
+        f"POLYLINE({step_str(self.name)},({pts_str}))"
+    }
+}
+
+// Represents a RATIONAL_B_SPLINE_SURFACE entity.
+// Common form (as part of a complex surface instance):
+//   RATIONAL_B_SPLINE_SURFACE(((1.,0.7,1.),( ... ),( ... )))
+//
+// Notes:
+// - We store weights as raw strings to preserve STEP formatting.
+pub struct RationalBSplineSurface {
+    pub weights: Vec<Vec<String>>
+}
+
+impl RationalBSplineSurface {
+    pub fn new(weights: Vec<Vec<String>>) -> RationalBSplineSurface {
+        RationalBSplineSurface { weights: weights }
+    }
+}
+
+impl Entity for RationalBSplineSurface {
+    fn to_step(self) -> String {
+        let row_strs = self.weights
+            .map(|row| {
+                let r = row.join(",")
+                f"({r})"
+            })
+            .join(",")
+        f"RATIONAL_B_SPLINE_SURFACE(({row_strs}))"
+    }
+}
+
+// Represents a RATIONAL_B_SPLINE_CURVE entity.
+// Common form (as part of a complex curve instance):
+//   RATIONAL_B_SPLINE_CURVE((1.,1.,1.,1.))
+//
+// Notes:
+// - We store weights as raw strings to preserve STEP formatting.
+pub struct RationalBSplineCurve {
+    pub weights: Vec<String>
+}
+
+impl RationalBSplineCurve {
+    pub fn new(weights: Vec<String>) -> RationalBSplineCurve {
+        RationalBSplineCurve { weights: weights }
+    }
+}
+
+impl Entity for RationalBSplineCurve {
+    fn to_step(self) -> String {
+        let weights_str = self.weights.join(",")
+        f"RATIONAL_B_SPLINE_CURVE(({weights_str}))"
+    }
+}
+
+// Represents a RECTANGULAR_TRIMMED_SURFACE entity.
+// Common form:
+//   RECTANGULAR_TRIMMED_SURFACE('',#<basis>,<u1>,<u2>,<v1>,<v2>,.T.,.T.)
+pub struct RectangularTrimmedSurface {
+    pub name: String
+    pub basis_surface: Ref
+    pub u1: String
+    pub u2: String
+    pub v1: String
+    pub v2: String
+    pub usense: bool
+    pub vsense: bool
+}
+
+impl RectangularTrimmedSurface {
+    pub fn new(name: String, basis_surface: Ref, u1: String, u2: String, v1: String, v2: String, usense: bool, vsense: bool) -> RectangularTrimmedSurface {
+        RectangularTrimmedSurface { name: name, basis_surface: basis_surface, u1: u1, u2: u2, v1: v1, v2: v2, usense: usense, vsense: vsense }
+    }
+}
+
+impl Entity for RectangularTrimmedSurface {
+    fn to_step(self) -> String {
+        let basis_str = f"#{self.basis_surface.id.value}"
+        let usense_str = bool_to_step(self.usense)
+        let vsense_str = bool_to_step(self.vsense)
+        f"RECTANGULAR_TRIMMED_SURFACE({step_str_or_dollar(self.name)},{basis_str},{self.u1},{self.u2},{self.v1},{self.v2},{usense_str},{vsense_str})"
+    }
+}
+
+// Represents a RECTANGULAR_PYRAMID entity (CSG primitive).
+// Example:
+//   RECTANGULAR_PYRAMID('name', #10, 10.0, 20.0, 30.0)
+pub struct RectangularPyramid {
+    pub name: String
+    pub position: Ref
+    pub x: f64
+    pub y: f64
+    pub height: f64
+}
+
+impl RectangularPyramid {
+    pub fn new(name: String, position: Ref, x: f64, y: f64, height: f64) -> RectangularPyramid {
+        RectangularPyramid { name: name, position: position, x: x, y: y, height: height }
+    }
+}
+
+impl Entity for RectangularPyramid {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"RECTANGULAR_PYRAMID({step_str(self.name)},{pos_str},{fmt_num(self.x)},{fmt_num(self.y)},{fmt_num(self.height)})"
+    }
+}
+
+// Represents a RIGHT_ANGULAR_WEDGE entity (CSG primitive).
+// Example:
+//   RIGHT_ANGULAR_WEDGE('name', #10, 10.0, 20.0, 30.0, 5.0)
+pub struct RightAngularWedge {
+    pub name: String
+    pub position: Ref
+    pub x: f64
+    pub y: f64
+    pub z: f64
+    pub ltx: f64
+}
+
+impl RightAngularWedge {
+    pub fn new(name: String, position: Ref, x: f64, y: f64, z: f64, ltx: f64) -> RightAngularWedge {
+        RightAngularWedge { name: name, position: position, x: x, y: y, z: z, ltx: ltx }
+    }
+}
+
+impl Entity for RightAngularWedge {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"RIGHT_ANGULAR_WEDGE({step_str(self.name)},{pos_str},{fmt_num(self.x)},{fmt_num(self.y)},{fmt_num(self.z)},{fmt_num(self.ltx)})"
+    }
+}
+
+// Represents a RIGHT_CIRCULAR_CONE entity (CSG primitive).
+// Example:
+//   RIGHT_CIRCULAR_CONE('name', #10, 50.0, 10.0, 0.5)
+pub struct RightCircularCone {
+    pub name: String
+    pub position: Ref
+    pub height: f64
+    pub radius: f64
+    pub semi_angle: f64
+}
+
+impl RightCircularCone {
+    pub fn new(name: String, position: Ref, height: f64, radius: f64, semi_angle: f64) -> RightCircularCone {
+        RightCircularCone { name: name, position: position, height: height, radius: radius, semi_angle: semi_angle }
+    }
+}
+
+impl Entity for RightCircularCone {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"RIGHT_CIRCULAR_CONE({step_str(self.name)},{pos_str},{fmt_num(self.height)},{fmt_num(self.radius)},{fmt_num(self.semi_angle)})"
+    }
+}
+
+// Represents a RIGHT_CIRCULAR_CYLINDER entity (CSG primitive).
+// Example:
+//   RIGHT_CIRCULAR_CYLINDER('name', #10, 50.0, 10.0)
+pub struct RightCircularCylinder {
+    pub name: String
+    pub position: Ref
+    pub height: f64
+    pub radius: f64
+}
+
+impl RightCircularCylinder {
+    pub fn new(name: String, position: Ref, height: f64, radius: f64) -> RightCircularCylinder {
+        RightCircularCylinder { name: name, position: position, height: height, radius: radius }
+    }
+}
+
+impl Entity for RightCircularCylinder {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"RIGHT_CIRCULAR_CYLINDER({step_str(self.name)},{pos_str},{fmt_num(self.height)},{fmt_num(self.radius)})"
+    }
+}
+
+// Represents a SPHERE entity (CSG primitive).
+// Example:
+//   SPHERE('name', #10, 5.0)
+pub struct Sphere {
+    pub name: String
+    pub position: Ref
+    pub radius: f64
+}
+
+impl Sphere {
+    pub fn new(name: String, position: Ref, radius: f64) -> Sphere {
+        Sphere { name: name, position: position, radius: radius }
+    }
+}
+
+impl Entity for Sphere {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"SPHERE({step_str(self.name)},{pos_str},{fmt_num(self.radius)})"
+    }
+}
+
+// Represents a SURFACE_OF_LINEAR_EXTRUSION entity.
+// Example:
+//   SURFACE_OF_LINEAR_EXTRUSION('name', #10, #20)
+pub struct SurfaceOfLinearExtrusion {
+    pub name: String
+    pub swept_curve: Ref
+    pub extrusion_axis: Ref
+}
+
+impl SurfaceOfLinearExtrusion {
+    pub fn new(name: String, swept_curve: Ref, extrusion_axis: Ref) -> SurfaceOfLinearExtrusion {
+        SurfaceOfLinearExtrusion { name: name, swept_curve: swept_curve, extrusion_axis: extrusion_axis }
+    }
+}
+
+impl Entity for SurfaceOfLinearExtrusion {
+    fn to_step(self) -> String {
+        let curve_str = f"#{self.swept_curve.id.value}"
+        let axis_str = f"#{self.extrusion_axis.id.value}"
+        f"SURFACE_OF_LINEAR_EXTRUSION({step_str(self.name)},{curve_str},{axis_str})"
+    }
+}
+
+// Represents a SURFACE_OF_REVOLUTION entity.
+// Example:
+//   SURFACE_OF_REVOLUTION('name', #10, #20)
+// where #10 is a swept curve and #20 is an AXIS1_PLACEMENT.
+pub struct SurfaceOfRevolution {
+    pub name: String
+    pub swept_curve: Ref
+    pub axis_position: Ref
+}
+
+impl SurfaceOfRevolution {
+    pub fn new(name: String, swept_curve: Ref, axis_position: Ref) -> SurfaceOfRevolution {
+        SurfaceOfRevolution { name: name, swept_curve: swept_curve, axis_position: axis_position }
+    }
+}
+
+impl Entity for SurfaceOfRevolution {
+    fn to_step(self) -> String {
+        let curve_str = f"#{self.swept_curve.id.value}"
+        let axis_str = f"#{self.axis_position.id.value}"
+        f"SURFACE_OF_REVOLUTION({step_str(self.name)},{curve_str},{axis_str})"
+    }
+}
+
+// Represents a SWEPT_SURFACE entity.
+// Example:
+//   SWEPT_SURFACE('name', #10)
+// where #10 is a curve.
+pub struct SweptSurface {
+    pub name: String
+    pub swept_curve: Ref
+}
+
+impl SweptSurface {
+    pub fn new(name: String, swept_curve: Ref) -> SweptSurface {
+        SweptSurface { name: name, swept_curve: swept_curve }
+    }
+}
+
+impl Entity for SweptSurface {
+    fn to_step(self) -> String {
+        let curve_str = f"#{self.swept_curve.id.value}"
+        f"SWEPT_SURFACE({step_str(self.name)},{curve_str})"
+    }
+}
+
+// Represents a TOROIDAL_SURFACE entity.
+// Example from kicadoutput01-roundtrip.step:
+//   TOROIDAL_SURFACE('',#98,0.4,0.4)
+pub struct ToroidalSurface {
+    pub name: String
+    pub position: Ref
+    pub major_radius_literal: String
+    pub minor_radius_literal: String
+}
+
+impl ToroidalSurface {
+    pub fn new(name: String, position: Ref, major_radius_literal: String, minor_radius_literal: String) -> ToroidalSurface {
+        ToroidalSurface { name: name, position: position, major_radius_literal: major_radius_literal, minor_radius_literal: minor_radius_literal }
+    }
+}
+
+impl Entity for ToroidalSurface {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"TOROIDAL_SURFACE({step_str_or_dollar(self.name)},{pos_str},{self.major_radius_literal},{self.minor_radius_literal})"
+    }
+}
+
+// Represents a TORUS entity (CSG primitive).
+// Note: This is the solid primitive, distinct from TOROIDAL_SURFACE.
+// Example:
+//   TORUS('name', #10, 20.0, 5.0)
+pub struct Torus {
+    pub name: String
+    pub position: Ref
+    pub major_radius: f64
+    pub minor_radius: f64
+}
+
+impl Torus {
+    pub fn new(name: String, position: Ref, major_radius: f64, minor_radius: f64) -> Torus {
+        Torus { name: name, position: position, major_radius: major_radius, minor_radius: minor_radius }
+    }
+}
+
+impl Entity for Torus {
+    fn to_step(self) -> String {
+        let pos_str = f"#{self.position.id.value}"
+        f"TORUS({step_str(self.name)},{pos_str},{fmt_num(self.major_radius)},{fmt_num(self.minor_radius)})"
+    }
+}
+
+// Represents a TRIMMED_CURVE entity.
+//
+// Common form:
+//   TRIMMED_CURVE('',#<basis>,(PARAMETER_VALUE(0.)),(PARAMETER_VALUE(1.)),.T.,.PARAMETER.)
+pub struct TrimmedCurve {
+    pub name: String
+    pub basis_curve: Ref
+    pub trim_1: String
+    pub trim_2: String
+    pub sense_agreement: bool
+    pub master_representation: String
+}
+
+impl TrimmedCurve {
+    pub fn new(name: String, basis_curve: Ref, trim_1: String, trim_2: String, sense_agreement: bool, master_representation: String) -> TrimmedCurve {
+        TrimmedCurve { name: name, basis_curve: basis_curve, trim_1: trim_1, trim_2: trim_2, sense_agreement: sense_agreement, master_representation: master_representation }
+    }
+}
+
+impl Entity for TrimmedCurve {
+    fn to_step(self) -> String {
+        let basis_str = f"#{self.basis_curve.id.value}"
+        let sense_str = bool_to_step(self.sense_agreement)
+        f"TRIMMED_CURVE({step_str_or_dollar(self.name)},{basis_str},{self.trim_1},{self.trim_2},{sense_str},{self.master_representation})"
+    }
+}
+
+// Represents a VECTOR entity.
+pub struct Vector {
+    pub name: String
+    pub orientation: Ref
+    pub magnitude: f64
+}
+
+impl Vector {
+    pub fn new(name: String, orientation: Ref, magnitude: f64) -> Vector {
+        Vector { name: name, orientation: orientation, magnitude: magnitude }
+    }
+}
+
+impl Entity for Vector {
+    fn to_step(self) -> String {
+        let dir = f"#{self.orientation.id.value}"
+        f"VECTOR({step_str(self.name)},{dir},{fmt_num(self.magnitude)})"
+    }
+}
+
+/// Serialize a boolean operator without cross-module trait dispatch.
+///
+/// `Union`/`Intersection`/`Difference` collide with other enums' variants,
+/// which makes runtime method lookup ambiguous outside this module.
+pub fn boolean_operator_to_step(v: BooleanOperator) -> String {
+    match v {
+        BooleanOperator::Union => ".UNION."
+        BooleanOperator::Intersection => ".INTERSECTION."
+        BooleanOperator::Difference => ".DIFFERENCE."
+    }
+}

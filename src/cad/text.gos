@@ -1,0 +1,298 @@
+//! Text builders: convert a font's glyph outlines into CAD scene nodes.
+
+use crate::cad::compiler_bezier::bezier_path_groups
+use crate::cad::geometry::{Vec2, matrix_to_euler, multiply_matrices, rotation_matrix, rotate_point}
+use crate::cad::types::{BezierAnchor, BezierPath, Face, Rgb, SceneNode}
+use crate::cad::design::Design
+use crate::font::draw::{Anchor, Graphic, Path, to_graphic}
+use crate::font::flatten::bbox
+use crate::font::layout::Alignment
+use crate::font::model::Font
+
+fn anchor_to_bezier_anchor(anchor: Anchor) -> BezierAnchor {
+    let pos = anchor.position
+    // Handles in the draw package are relative offsets; CAD uses absolute.
+    BezierAnchor {
+        position: (pos.x, pos.y)
+        handle_in: (pos.x + anchor.handle_in.x, pos.y + anchor.handle_in.y)
+        handle_out: (pos.x + anchor.handle_out.x, pos.y + anchor.handle_out.y)
+    }
+}
+
+fn path_to_bezier_path(path: Path) -> BezierPath {
+    let mut anchors = #[]
+    for a in path.anchors {
+        anchors.push(anchor_to_bezier_anchor(a))
+    }
+    BezierPath { anchors: anchors, closed: path.closed, clear: path.clear }
+}
+
+fn collect_bezier_paths(g: Graphic) -> Vec<BezierPath> {
+    match g {
+        Graphic::CompoundPath(cp) => {
+            let mut out = #[]
+            for p in cp.paths {
+                out.push(path_to_bezier_path(p))
+            }
+            out
+        }
+        Graphic::Group(group) => {
+            let mut out = #[]
+            for item in group.items {
+                for p in collect_bezier_paths(item) {
+                    out.push(p)
+                }
+            }
+            out
+        }
+        Graphic::Path(p) => #[path_to_bezier_path(p)]
+    }
+}
+
+fn collect_profiles(g: Graphic, segments: i64) -> Vec<(Vec<Vec2>, Vec<Vec<Vec2>>)> {
+    match g {
+        Graphic::CompoundPath(cp) => {
+            let mut outers: Vec<Vec<Vec2>> = #[]
+            let mut holes: Vec<Vec<Vec2>> = #[]
+            for p in cp.paths {
+                let tuples = Graphic::Path(p).to_profiles_tuples(segments)
+                for pt_tuple in tuples {
+                    let poly, _clear = pt_tuple
+                    if p.clear {
+                        holes.push(poly)
+                    } else {
+                        outers.push(poly)
+                    }
+                }
+            }
+            let mut results = #[]
+            for outer in outers {
+                let ccw_outer = crate::cad::geometry::force_ccw(outer)
+                let mut my_holes = #[]
+                for hole in holes {
+                    if hole.len() > 0 &&
+                        crate::cad::geometry::is_point_in_polygon(hole[0], ccw_outer)
+                    {
+                        my_holes.push(crate::cad::geometry::force_cw(hole))
+                    }
+                }
+                results.push((ccw_outer, my_holes))
+            }
+            results
+        }
+        Graphic::Group(group) => {
+            let mut results = #[]
+            for item in group.items {
+                for p in collect_profiles(item, segments) {
+                    results.push(p)
+                }
+            }
+            results
+        }
+        Graphic::Path(p) => {
+            let tuples = Graphic::Path(p).to_profiles_tuples(segments)
+            let mut out = #[]
+            for pt_tuple in tuples {
+                let poly, _clear = pt_tuple
+                out.push((crate::cad::geometry::force_ccw(poly), Vec::new()))
+            }
+            out
+        }
+    }
+}
+
+/// Render text into one scene node per glyph component, preserving cubic
+/// Beziers (flattened later by the STEP compiler).
+pub fn text_at_bezier(
+    text: String
+    x: f64
+    y: f64
+    z: f64
+    font: Font
+    font_size: f64 = 5.0
+    max_width: f64 = 1000.0
+    emboss_depth: f64 = 0.5
+    rx: f64 = 0.0
+    ry: f64 = 0.0
+    rz: f64 = 0.0
+) -> Vec<SceneNode> {
+    let fs = font_size
+    let mw = max_width
+    let box = bbox(-mw / 2.0, -fs / 2.0, mw / 2.0, fs / 2.0)
+    let text_graphic = match to_graphic(font, text, 1.0, Alignment::Center, true) {
+        Ok(g) => g.scale_to_fit(box, Alignment::Center)
+        Err(_) => return #[]
+    }
+    let all_paths = text_graphic.all_paths_and_compound_paths()
+    let mut nodes = #[]
+    for g in all_paths {
+        let bezier_paths = collect_bezier_paths(g)
+        // One solid per disconnected glyph component so each closed shell
+        // belongs to exactly one MANIFOLD_SOLID_BREP.
+        for group in bezier_path_groups(bezier_paths) {
+            let mut solid = crate::cad::types::ExtrudedBezierProfile::new(group, emboss_depth)
+                .named("text")
+                .colored(Rgb::orange())
+            solid = solid.turned_x(rx).turned_y(ry).turned_z(rz).moved(x, y, z)
+            nodes.push(solid)
+        }
+    }
+    nodes
+}
+
+/// Render text as polylines with `segments` samples per curve span.
+pub fn text_at(
+    text: String
+    x: f64
+    y: f64
+    z: f64
+    font: Font
+    font_size: f64 = 5.0
+    max_width: f64 = 1000.0
+    emboss_depth: f64 = 0.5
+    rx: f64 = 0.0
+    ry: f64 = 0.0
+    rz: f64 = 0.0
+    segments: i64 = 0
+) -> Vec<SceneNode> {
+    if segments <= 0 {
+        return text_at_bezier(
+            text
+            x
+            y
+            z
+            font
+            font_size
+            max_width
+            emboss_depth
+            rx
+            ry
+            rz
+        )
+    }
+    let fs = font_size
+    let mw = max_width
+    let box = bbox(-mw / 2.0, -fs / 2.0, mw / 2.0, fs / 2.0)
+    let text_graphic = match to_graphic(font, text, 1.0, Alignment::Center, true) {
+        Ok(g) => g.scale_to_fit(box, Alignment::Center)
+        Err(_) => return #[]
+    }
+    let all_paths = text_graphic.all_paths_and_compound_paths()
+    let mut nodes = #[]
+    for g in all_paths {
+        let profiles = collect_profiles(g, segments)
+        for profile in profiles {
+            let outer, holes = profile
+            if outer.len() < 3 {
+                continue
+            }
+            let mut solid = crate::cad::types::ExtrudedProfile::new(outer, emboss_depth, holes)
+                .named("text")
+                .colored(Rgb::orange())
+            solid = solid.turned_x(rx).turned_y(ry).turned_z(rz).moved(x, y, z)
+            nodes.push(solid)
+        }
+    }
+    nodes
+}
+
+impl Design {
+    /// Place text on a face of `target`.
+    pub fn add_text_on_face(
+        self
+        target: SceneNode
+        text: String
+        face: Face
+        font: Font
+        font_size: Option<f64> = None
+        emboss_depth: Option<f64> = None
+        offset_x: f64 = 0.0
+        offset_y: f64 = 0.0
+        rotation: f64 = 0.0
+        margin: Option<f64> = None
+        color: Rgb = Rgb { r: 1.0, g: 0.6, b: 0.0 }
+        emboss: bool = true
+        segments: i64 = 0
+    ) -> Design {
+        let min_x, max_x, min_y, max_y, min_z, max_z = target.shape.bounding_box()
+        let mid_x = (min_x + max_x) / 2.0
+        let mid_y = (min_y + max_y) / 2.0
+        let mid_z = (min_z + max_z) / 2.0
+        let dx = max_x - min_x
+        let dy = max_y - min_y
+        let dz = max_z - min_z
+        let m = match margin {
+            Some(v) => v
+            None => 2.0
+        }
+
+        // Local coordinates and rotations relative to the shape origin. The
+        // 0.01 offset embeds the text slightly and avoids Z-fighting.
+        let lx, ly, lz, lrx, lry, lrz, fw, fh = match face {
+            Face::Top => {
+                let new_max_z = if emboss { max_z - 0.01 } else { max_z + 0.01 }
+                (mid_x + offset_x, mid_y + offset_y, new_max_z, 0.0, 0.0, 0.0, dx, dy)
+            }
+            Face::Bottom => {
+                let new_min_z = if emboss { min_z + 0.01 } else { min_z - 0.01 }
+                (mid_x + offset_x, mid_y - offset_y, new_min_z, 180.0, 0.0, 180.0, dx, dy)
+            }
+            Face::Front => {
+                let new_max_y = if emboss { max_y - 0.01 } else { max_y + 0.01 }
+                (mid_x + offset_x, new_max_y, mid_z + offset_y, 90.0, 0.0, 180.0, dx, dz)
+            }
+            Face::Back => {
+                let new_min_y = if emboss { min_y + 0.01 } else { min_y - 0.01 }
+                (mid_x - offset_x, new_min_y, mid_z + offset_y, 90.0, 0.0, 0.0, dx, dz)
+            }
+            Face::Left => {
+                let new_min_x = if emboss { min_x + 0.01 } else { min_x - 0.01 }
+                (new_min_x, mid_y + offset_x, mid_z + offset_y, 90.0, 0.0, -90.0, dy, dz)
+            }
+            Face::Right => {
+                let new_max_x = if emboss { max_x - 0.01 } else { max_x + 0.01 }
+                (new_max_x, mid_y - offset_x, mid_z + offset_y, 90.0, 0.0, 90.0, dy, dz)
+            }
+        }
+
+        let fs = match font_size {
+            Some(v) => v
+            None => {
+                let mut s = fh - 2.0 * m
+                if s <= 0.0 {
+                    s = 1.0
+                }
+                s
+            }
+        }
+        let mw = fw - 2.0 * m
+        let ed = emboss_depth.unwrap_or(0.5)
+        let frx, fry, frz = matrix_to_euler(multiply_matrices(
+            rotation_matrix(lrx, lry, lrz)
+            rotation_matrix(0.0, 0.0, rotation)
+        ))
+        let text_nodes = text_at(
+            text, lx, ly, lz, font, fs, mw, ed, frx, fry, frz, segments
+        )
+        let mut final_nodes = #[]
+        for n in text_nodes {
+            let n = n.colored(color)
+            // Compose the target's local-to-global transform: R_target * R_local.
+            let m_local = rotation_matrix(n.rx, n.ry, n.rz)
+            let m_target = rotation_matrix(target.rx, target.ry, target.rz)
+            let m_combined = multiply_matrices(m_target, m_local)
+            let grx, gry, grz = matrix_to_euler(m_combined)
+            let gx, gy, gz = rotate_point((n.tx, n.ty, n.tz), target.rx, target.ry, target.rz)
+            final_nodes.push(SceneNode {
+                tx: gx + target.tx
+                ty: gy + target.ty
+                tz: gz + target.tz
+                rx: grx
+                ry: gry
+                rz: grz
+                ..n
+            })
+        }
+        self.add_all(final_nodes)
+    }
+}

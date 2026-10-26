@@ -1,0 +1,6 @@
+//! The core entity trait: every STEP entity can serialize itself.
+
+pub trait Entity {
+    /// Serialize this entity as a single STEP statement body.
+    fn to_step(self) -> String
+}

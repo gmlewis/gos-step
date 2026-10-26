@@ -1,0 +1,86 @@
+//! Formatting, ID, and error-display tests.
+
+use crate::error
+use crate::fmt
+
+#[test]
+fn fmt_num_step_conforming_reals() {
+    assert_eq(fmt::fmt_num(10.0), "10.0")
+    assert_eq(fmt::fmt_num(2.5), "2.5")
+    assert_eq(fmt::fmt_num(0.0), "0.0")
+    assert_eq(fmt::fmt_num(-0.0), "0.0")
+    // Trig residue is rounded away, so it cannot reach exponent form.
+    assert_eq(fmt::fmt_num(1.0e-16), "0.0")
+    assert_eq(fmt::fmt_num(-4.1779407933722266e-15), "0.0")
+    // A genuine exponent must use an upper-case E and a decimal point.
+    assert_eq(fmt::fmt_num(1.0e-9), "1.0E-9")
+    assert_eq(fmt::fmt_num(-1.25e-7), "-1.25E-7")
+}
+
+#[test]
+fn fmt_num_large_integral_saturates_like_int32() {
+    // The reference saturates a 32-bit `to_int()`, so huge integral values print as
+    // 2147483647.0 rather than their true magnitude.
+    assert_eq(fmt::fmt_num(1.0e20), "2147483647.0")
+    assert_eq(fmt::fmt_num(1.5e21), "2147483647.0")
+}
+
+#[test]
+fn fmt_num_boundaries() {
+    assert_eq(fmt::fmt_num(1.0e-13), "0.0")
+    assert_eq(fmt::fmt_num(1.0e-12), "1.0E-12")
+    assert_eq(fmt::fmt_num(9.999999e-7), "9.999999E-7")
+    assert_eq(fmt::fmt_num(1.0e-6), "0.000001")
+    assert_eq(fmt::fmt_num(1.2345678901234567e20), "2147483647.0")
+}
+
+#[test]
+fn step_str_doubles_quotes() {
+    assert_eq(fmt::step_str("abc"), "'abc'")
+    assert_eq(fmt::step_str("It's"), "'It''s'")
+    assert_eq(fmt::step_str(""), "''")
+}
+
+#[test]
+fn snap_double_matches_reference() {
+    let snapping = Some(1.0e-5)
+    assert_eq(fmt::ref_to_string(fmt::snap_double(3.0, snapping)), "3.0000000000000004")
+    assert_eq(fmt::ref_to_string(fmt::snap_double(0.0, snapping)), "0")
+    assert_eq(fmt::ref_to_string(fmt::snap_double(-3.0, snapping)), "-3.0000000000000004")
+    assert_eq(fmt::ref_to_string(fmt::snap_double(2.88333, snapping)), "2.8833300000000004")
+    assert_eq(fmt::ref_to_string(fmt::snap_double(2.883330001, snapping)), "2.8833300000000004")
+    assert_eq(fmt::ref_to_string(fmt::snap_double(2.883329999, snapping)), "2.8833300000000004")
+
+    let snapping_micron = Some(1.0e-3)
+    assert_eq(fmt::ref_to_string(fmt::snap_double(2.88333, snapping_micron)), "2.883")
+    assert_eq(fmt::ref_to_string(fmt::snap_double(2.8839, snapping_micron)), "2.884")
+    assert_eq(fmt::ref_to_string(fmt::snap_double(2.88333, None)), "2.88333")
+}
+
+#[test]
+fn fmt_double_matches_reference() {
+    let snapping = Some(1.0e-5)
+    assert_eq(fmt::fmt_double(3.0, snapping), "3.00000")
+    assert_eq(fmt::fmt_double(0.0, snapping), "0.00000")
+    assert_eq(fmt::fmt_double(-3.0, snapping), "-3.00000")
+    assert_eq(fmt::fmt_double(2.88333, snapping), "2.88333")
+    assert_eq(fmt::fmt_double(2.9, snapping), "2.90000")
+
+    let snapping_micron = Some(1.0e-3)
+    assert_eq(fmt::fmt_double(2.88333, snapping_micron), "2.883")
+    assert_eq(fmt::fmt_double(2.9, snapping_micron), "2.900")
+    assert_eq(fmt::fmt_double(2.88333, None), "2.88333")
+}
+
+#[test]
+fn parse_error_display_is_exact() {
+    let info = error::ParseErrorInfo::new("parse error")
+    assert_eq(info.to_string(), "parse error")
+}
+
+#[test]
+fn utf16_width_counts_astral_scalars_as_two() {
+    assert_eq(error::utf16_width('a'), 1)
+    assert_eq(error::utf16_width('\u{1F600}'), 2)
+    assert_eq(error::utf16_len("a\u{1F600}b"), 4)
+}

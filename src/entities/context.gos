@@ -1,0 +1,194 @@
+//! STEP entity models: context family.
+//!
+//! Ported 1:1 from the reference implementation; the
+//! serialization (including spacing quirks) is the contract.
+
+use crate::entity::Entity
+use crate::fmt::{step_str}
+use crate::ids::{EntityId}
+
+fn step_str_or_dollar(s: String) -> String {
+    if s == "$" { "$" } else { step_str(s) }
+}
+
+fn bool_to_step(b: bool) -> String {
+    if b { ".T." } else { ".F." }
+}
+
+// Represents a STEP Part 21 complex entity instance wrapper.
+//
+// Example (from simple-box.step):
+//   #187=(
+//     GEOMETRIC_REPRESENTATION_CONTEXT(3)
+//     GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#188))
+//     GLOBAL_UNIT_ASSIGNED_CONTEXT((#194,#190,#189))
+//     REPRESENTATION_CONTEXT('cube','TOP_LEVEL_ASSEMBLY_PART')
+//   );
+//
+// We preserve the raw parenthesized body so it round-trips.
+pub struct CtxWrap {
+    pub raw: String
+}
+
+impl CtxWrap {
+    pub fn new(raw: String) -> CtxWrap {
+        CtxWrap { raw: raw }
+    }
+}
+
+impl Entity for CtxWrap {
+    fn to_step(self) -> String {
+        self.raw
+    }
+}
+
+// Represents a STEP Part 21 complex entity instance: #<id>=( <part1> <part2> ... );
+//
+// We parse the wrapper into a sequence of parts, each like `NAME(<args>)`, and
+// serialize back to the parenthesized multi-line form.
+
+pub enum ComplexPart {
+    GeomRepCtx(GeometricRepresentationContext)
+    RepCtx(RepresentationContext)
+    GlobUncCtx(GlobalUncertaintyAssignedContext)
+    GlobUnitCtx(GlobalUnitAssignedContext)
+    ConversionBasedUnit(crate::entities::units::ConversionBasedUnit)
+    NamedUnit(crate::entities::units::NamedUnit)
+    SiUnit(crate::entities::units::SiUnit)
+    LengthUnit(crate::entities::units::LengthUnit)
+    MassUnit(crate::entities::units::MassUnit)
+    PlaneAngleUnit(crate::entities::units::PlaneAngleUnit)
+    SolidAngleUnit(crate::entities::units::SolidAngleUnit)
+    RepRel(crate::entities::product::RepresentationRelationship)
+    RepRelWT(crate::entities::product::RepresentationRelationshipWithTransformation)
+    ShapeRepRel
+    RepresentationItem(String)
+    GeometricRepresentationItem
+    Surface
+    BoundedSurface
+    RatBSpline(crate::entities::geometry::RationalBSplineCurve)
+    BSplineSurf(crate::entities::geometry::BSplineSurface)
+    BSplineSurfKnots(crate::entities::geometry::BSplineSurfaceWithKnots)
+    RatBSplineSurf(crate::entities::geometry::RationalBSplineSurface)
+    Raw(String, String)
+}
+
+pub struct ComplexInstance {
+    pub parts: Vec<ComplexPart>
+}
+
+impl ComplexInstance {
+    pub fn new(parts: Vec<ComplexPart>) -> ComplexInstance {
+        ComplexInstance { parts: parts }
+    }
+}
+
+impl Entity for ComplexInstance {
+    fn to_step(self) -> String {
+        let lines = self.parts
+            .map(|p| {
+                match p {
+                    ComplexPart::GeomRepCtx(e) => e.to_step()
+                    ComplexPart::RepCtx(e) => e.to_step()
+                    ComplexPart::GlobUncCtx(e) => e.to_step()
+                    ComplexPart::GlobUnitCtx(e) => e.to_step()
+                    ComplexPart::ConversionBasedUnit(e) => e.to_step()
+                    ComplexPart::NamedUnit(e) => e.to_step()
+                    ComplexPart::SiUnit(e) => e.to_step()
+                    ComplexPart::LengthUnit(e) => e.to_step()
+                    ComplexPart::MassUnit(e) => e.to_step()
+                    ComplexPart::PlaneAngleUnit(e) => e.to_step()
+                    ComplexPart::SolidAngleUnit(e) => e.to_step()
+                    ComplexPart::RepRel(e) => e.to_step()
+                    ComplexPart::RepRelWT(e) => e.to_step()
+                    ComplexPart::ShapeRepRel => "SHAPE_REPRESENTATION_RELATIONSHIP()"
+                    ComplexPart::RepresentationItem(arg) => f"REPRESENTATION_ITEM({arg})"
+                    ComplexPart::GeometricRepresentationItem => "GEOMETRIC_REPRESENTATION_ITEM()"
+                    ComplexPart::Surface => "SURFACE()"
+                    ComplexPart::BoundedSurface => "BOUNDED_SURFACE()"
+                    ComplexPart::RatBSpline(e) => e.to_step()
+                    ComplexPart::BSplineSurf(e) => e.to_step()
+                    ComplexPart::BSplineSurfKnots(e) => e.to_step()
+                    ComplexPart::RatBSplineSurf(e) => e.to_step()
+                    ComplexPart::Raw(name, args) => f"{name}{args}"
+                }
+            })
+            .join("\n")
+        f"(\n{lines}\n)"
+    }
+}
+
+// Represents a GEOMETRIC_REPRESENTATION_CONTEXT entity.
+pub struct GeometricRepresentationContext {
+    pub dimension: i64
+}
+
+impl GeometricRepresentationContext {
+    pub fn new(dimension: i64) -> GeometricRepresentationContext {
+        GeometricRepresentationContext { dimension: dimension }
+    }
+}
+
+impl Entity for GeometricRepresentationContext {
+    fn to_step(self) -> String {
+        f"GEOMETRIC_REPRESENTATION_CONTEXT({self.dimension})"
+    }
+}
+
+// Represents a GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT entity.
+// In fixtures this appears inside a complex instance as:
+//   GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#188))
+pub struct GlobalUncertaintyAssignedContext {
+    pub uncertainties: Vec<EntityId>
+}
+
+impl GlobalUncertaintyAssignedContext {
+    pub fn new(uncertainties: Vec<EntityId>) -> GlobalUncertaintyAssignedContext {
+        GlobalUncertaintyAssignedContext { uncertainties: uncertainties }
+    }
+}
+
+impl Entity for GlobalUncertaintyAssignedContext {
+    fn to_step(self) -> String {
+        let refs = self.uncertainties.map(|id| { f"#{id.value}" }).join(",")
+        f"GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT(({refs}))"
+    }
+}
+
+// Represents a GLOBAL_UNIT_ASSIGNED_CONTEXT entity.
+// In fixtures this appears inside a complex instance as:
+//   GLOBAL_UNIT_ASSIGNED_CONTEXT((#194,#190,#189))
+pub struct GlobalUnitAssignedContext {
+    pub units: Vec<EntityId>
+}
+
+impl GlobalUnitAssignedContext {
+    pub fn new(units: Vec<EntityId>) -> GlobalUnitAssignedContext {
+        GlobalUnitAssignedContext { units: units }
+    }
+}
+
+impl Entity for GlobalUnitAssignedContext {
+    fn to_step(self) -> String {
+        let refs = self.units.map(|id| { f"#{id.value}" }).join(",")
+        f"GLOBAL_UNIT_ASSIGNED_CONTEXT(({refs}))"
+    }
+}
+
+// Represents a REPRESENTATION_CONTEXT entity.
+pub struct RepresentationContext {
+    pub context_identifier: String
+    pub context_type: String
+}
+
+impl RepresentationContext {
+    pub fn new(context_identifier: String, context_type: String) -> RepresentationContext {
+        RepresentationContext { context_identifier: context_identifier, context_type: context_type }
+    }
+}
+
+impl Entity for RepresentationContext {
+    fn to_step(self) -> String {
+        f"REPRESENTATION_CONTEXT({step_str(self.context_identifier)},{step_str(self.context_type)})"
+    }
+}

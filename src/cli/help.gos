@@ -1,0 +1,296 @@
+//! Help, command-line, and documentation rendering.
+//!
+//! These functions are pure so they can be unit-tested and so the parse layer
+//! can attach the exact help block to an error without printing anything.
+//!
+//! The layout reproduces the reference argument parser:
+//!
+//! ```text
+//! Usage: <prog> [options]
+//!
+//! <description>
+//!
+//! Options:
+//!   -h, --help                 Show help information.
+//!   <flags, then options>
+//! ```
+//!
+//! Entries are aligned to the longest label (`max_len - label.len() + 2`
+//! spaces of padding after the two-space indent), and single-value options
+//! with a default show the reference's `[default: <value>]` note.
+
+use std::collections::Map
+
+use crate::cli::spec::{Arg, NO_SHORT, is_flag}
+
+/// The repository URL advertised in generated files.
+pub const STEP_REPO_URL: String = "https://github.com/gmlewis/gos-step"
+
+/// `"true"` or `"false"`.
+fn bool_text(value: bool) -> String {
+    if value { "true" } else { "false" }
+}
+
+/// A run of `n` spaces.
+fn spaces(n: i64) -> String {
+    let mut out = ""
+    let mut i = 0
+    while i < n {
+        out += " "
+        i += 1
+    }
+    out
+}
+
+/// Compare two strings byte-wise (the reference's `lex_compare`).
+///
+/// `String::compare` in the reference compares length first, so it cannot be used
+/// for the alphabetical parameter listing. Names are ASCII in practice, but
+/// comparing scalars keeps the ordering byte-wise for any input.
+fn lex_compare(a: String, b: String) -> i64 {
+    let la = a.len()
+    let lb = b.len()
+    let n = if la < lb { la } else { lb }
+    let mut i = 0
+    while i < n {
+        let ca = a[i] as u32
+        let cb = b[i] as u32
+        if ca < cb {
+            return -1
+        }
+        if ca > cb {
+            return 1
+        }
+        i += 1
+    }
+    if la < lb {
+        -1
+    } else if la > lb {
+        1
+    } else {
+        0
+    }
+}
+
+/// Return a copy of `names` sorted ascending byte-wise.
+pub fn sorted_strings(names: Vec<String>) -> Vec<String> {
+    let mut out = names
+    let n = out.len()
+    let mut i = 1
+    while i < n {
+        let v = out[i]
+        let mut j = i - 1
+        while j >= 0 && lex_compare(out[j], v) > 0 {
+            out[j + 1] = out[j]
+            j = j - 1
+        }
+        out[j + 1] = v
+        i += 1
+    }
+    out
+}
+
+/// The display label for an argument in the help list.
+fn entry_label(name: String, spec: Arg) -> String {
+    let base = if spec.short == NO_SHORT {
+        "--" + name
+    } else {
+        "-" + spec.short.to_string() + ", --" + name
+    }
+    if is_flag(spec) {
+        base
+    } else {
+        base + " <" + name + ">"
+    }
+}
+
+/// The doc column for an argument, including the default note.
+fn entry_doc(spec: Arg) -> String {
+    let mut notes = ""
+    if !is_flag(spec) {
+        match spec.default {
+            Some(d) => if d.len() > 0 { notes = "[default: " + d + "]" }
+            None => ()
+        }
+    }
+    if spec.help.len() == 0 {
+        notes
+    } else if notes.len() == 0 {
+        spec.help
+    } else {
+        spec.help + " " + notes
+    }
+}
+
+/// Lay out `(label, doc)` pairs exactly like argparse's `format_entries`.
+fn format_entries(display: Vec<(String, String)>) -> String {
+    let mut max_len = 0
+    for item in display {
+        if item.0.len() > max_len {
+            max_len = item.0.len()
+        }
+    }
+    let mut out = ""
+    for item in display {
+        let label = item.0
+        let doc = item.1
+        out += "  " + label + spaces(max_len - label.len() + 2) + doc + "\n"
+    }
+    out
+}
+
+/// The built-in help label, or `None` when the caller declared both `-h` and
+/// `--help` itself.
+fn builtin_help_label(short_enabled: bool, long_enabled: bool) -> Option<String> {
+    if short_enabled && long_enabled {
+        Some("-h, --help")
+    } else if short_enabled {
+        Some("-h")
+    } else if long_enabled {
+        Some("--help")
+    } else {
+        None
+    }
+}
+
+/// Whether the built-in `-h` is available (no declared argument uses `h`).
+pub fn help_short_enabled(order: Vec<String>, specs: Map<String, Arg>) -> bool {
+    for name in order {
+        match specs.get(name) {
+            Some(spec) => if spec.short == 'h' { return false }
+            None => ()
+        }
+    }
+    true
+}
+
+/// Whether the built-in `--help` is available (no declared argument is named
+/// `help`).
+pub fn help_long_enabled(order: Vec<String>, specs: Map<String, Arg>) -> bool {
+    for name in order {
+        if name == "help" {
+            return false
+        }
+    }
+    true
+}
+
+/// Render the full help block, ending with a newline (like `render_help`).
+pub fn render_help(
+    prog: String
+    description: String
+    order: Vec<String>
+    specs: Map<String, Arg>
+) -> String {
+    let mut display: Vec<(String, String)> = #[]
+    let label = builtin_help_label(
+        help_short_enabled(order, specs)
+        help_long_enabled(order, specs)
+    )
+    match label {
+        Some(text) => display.push((text, "Show help information."))
+        None => ()
+    }
+    // Flags first, then options: the reference builds separate flag and option
+    // arrays and appends them in that order.
+    for name in order {
+        match specs.get(name) {
+            Some(spec) => if is_flag(spec) {
+                display.push((entry_label(name, spec), entry_doc(spec)))
+            }
+            None => ()
+        }
+    }
+    for name in order {
+        match specs.get(name) {
+            Some(spec) => if !is_flag(spec) {
+                display.push((entry_label(name, spec), entry_doc(spec)))
+            }
+            None => ()
+        }
+    }
+
+    let mut out = "Usage: " + prog
+    if order.len() > 0 {
+        out += " [options]"
+    }
+    if description.len() > 0 {
+        out += "\n\n" + description
+    }
+    out += "\n\nOptions:\n"
+    out += format_entries(display)
+    out
+}
+
+/// Quote one raw argv token for a shell command line.
+fn shell_quote(s: String) -> String {
+    if s.contains(" ") || s.contains("\t") || s.contains("'") {
+        "'" + s.replace("'", "'\\''") + "'"
+    } else {
+        s
+    }
+}
+
+/// Reduce an example program name to the number `run-example.sh` expects.
+///
+/// `"38-planetary-gearbox"` becomes `"38"`; a name without a dash is returned
+/// unchanged.
+fn example_number(prog: String) -> String {
+    match prog.find("-") {
+        Some(idx) => if idx > 0 { prog.substring(0, idx) } else { prog }
+        None => prog
+    }
+}
+
+/// Render the documented invocation for a run.
+///
+/// Example: `./run-example.sh 38 --numTeeth 12 -o gearbox.step`.
+pub fn command_line_text(prog: String, argv: Vec<String>) -> String {
+    let mut parts: Vec<String> = #["./run-example.sh", example_number(prog)]
+    for token in argv {
+        parts.push(shell_quote(token))
+    }
+    parts.join(" ")
+}
+
+/// Render the self-documenting parameter block embedded in generated STEP
+/// files.
+///
+/// `values` holds the parsed multi-values and `flags` the boolean state.
+/// Names are sorted byte-wise; flags print `true`/`false`, multi-values are
+/// comma-joined, and absent strings print `(unset)`.
+pub fn documentation_text(
+    prog: String
+    argv: Vec<String>
+    order: Vec<String>
+    specs: Map<String, Arg>
+    values: Map<String, Vec<String>>
+    flags: Map<String, bool>
+) -> String {
+    let mut lines: Vec<String> = #[
+        "Generated by the gmlewis/step CAD library."
+        "Repository: " + STEP_REPO_URL
+        "Example:    " + prog
+        "Command:    " + command_line_text(prog, argv)
+        "Parameters:"
+    ]
+    let mut names: Vec<String> = #[]
+    for name in order {
+        names.push(name)
+    }
+    for name in sorted_strings(names) {
+        let value = match specs.get(name) {
+            Some(spec) => if is_flag(spec) {
+                bool_text(flags.get(name).unwrap_or(false))
+            } else {
+                match values.get(name) {
+                    Some(vals) => vals.join(",")
+                    None => "(unset)"
+                }
+            }
+            None => "(unknown)"
+        }
+        lines.push("  --" + name + " = " + value)
+    }
+    lines.join("\n")
+}

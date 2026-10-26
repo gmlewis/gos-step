@@ -1,0 +1,97 @@
+//! Fixture round-trip and corpus stability tests.
+
+use crate::parse::entry::{parse_repository_from_file, parse_repository_from_string}
+
+fn roundtrip_file(path: String) -> String {
+    let repo1 = parse_repository_from_file(path).unwrap()
+    let out1 = repo1.to_step_file()
+    let repo2 = parse_repository_from_string(out1).unwrap()
+    let out2 = repo2.to_step_file()
+    assert_eq(out1, out2)
+    out2
+}
+
+#[test]
+fn ap242_min_fixture_roundtrip_is_idempotent() {
+    let out = roundtrip_file("testdata/ap242-min.step")
+    // Unknown DATA entities survive the roundtrip.
+    assert(out.contains("#10=FOO_BAR(1,$,'X');"))
+}
+
+#[test]
+fn ap242_stress_fixture_roundtrip_is_idempotent() {
+    let out = roundtrip_file("testdata/ap242-stress.step")
+    assert(out.contains("AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF"))
+    assert(out.contains("#13=FOO_BAR(1,$,'X');"))
+}
+
+#[test]
+fn ap242_comments_fixture_roundtrip_is_idempotent() {
+    let out = roundtrip_file("testdata/ap242-comments.step")
+    assert(out.contains("AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF"))
+    assert(out.contains("#5=FOO_BAR("))
+    assert(out.contains("'X'"))
+}
+
+#[test]
+fn ap242_strings_fixture_roundtrip_is_idempotent() {
+    let out = roundtrip_file("testdata/ap242-strings.step")
+    assert(out.contains("AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF"))
+    assert(out.contains("/* not a comment */"))
+    assert(out.contains("semicolon ; inside"))
+    assert(out.contains("It''s fine"))
+    assert(out.contains("#3=FOO_BAR("))
+    assert(out.contains("'X;Y'"))
+}
+
+#[test]
+fn machine_contact_medium_roundtrip_is_idempotent() {
+    let _ = roundtrip_file("testdata/MachineContactMedium.step")
+}
+
+#[test]
+fn fixtures_corpus_roundtrip_is_stable() {
+    let fixtures = #[
+        "testdata/ap242-min.step"
+        "testdata/ap242-stress.step"
+        "testdata/ap242-comments.step"
+        "testdata/ap242-strings.step"
+        "testdata/simple-box.step"
+        "testdata/kicadoutput01.step"
+    ]
+    for path in fixtures {
+        let repo1 = parse_repository_from_file(path).unwrap()
+        let out1 = repo1.to_step_file()
+        let repo2 = parse_repository_from_string(out1).unwrap()
+        let out2 = repo2.to_step_file()
+        assert_eq(out1, out2)
+    }
+}
+
+#[test]
+fn can_parse_simple_box_from_file() {
+    let repo = parse_repository_from_file("testdata/simple-box.step").unwrap()
+    let data = repo.to_step_data_section()
+    assert(repo.len() > 0)
+    assert(data.contains("CARTESIAN_POINT"))
+    assert(data.contains("DIRECTION"))
+    assert(data.contains("#133=DIRECTION('',(0.0,0.0,1.0));"))
+    assert(data.contains("#126=AXIS2_PLACEMENT_3D('',#159, #133, #134);"))
+    assert(data.contains("#114=VECTOR('',#135,1.0);"))
+    assert(data.contains("#102=LINE('',#160,#114);"))
+    assert(data.contains("#40=PLANE('',#127);"))
+}
+
+#[test]
+fn can_parse_kicadoutput01_from_file() {
+    let repo =
+        parse_repository_from_file("testdata/kicadoutput01.step").unwrap()
+    let data = repo.to_step_data_section()
+    assert(repo.len() > 0)
+    assert(data.contains("TOROIDAL_SURFACE"))
+    assert(data.contains("CONTEXT_DEPENDENT_SHAPE_REPRESENTATION"))
+    assert(data.contains("#97=TOROIDAL_SURFACE('',#98,0.4,0.4);"))
+    assert(data.contains("#433=CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#434,#436);"))
+    assert(data.contains("#435=ITEM_DEFINED_TRANSFORMATION('','',#11,#15);"))
+    assert(data.contains("#437=NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','R2',$,#5,#35,$);"))
+}

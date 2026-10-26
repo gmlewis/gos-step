@@ -1,0 +1,121 @@
+//! 03-engraved-name-tag — a keychain tag with programmable text.
+//!
+//! Usage: ./run-example.sh 03 --name Susan > name-tag.step
+
+use std::env
+use std::process
+
+use step
+use step::Face::{Top}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "debug": step::flag(short: 'd', help: "Print debug information")
+        "length": step::opt_double(50.0, help: "Tag length (mm)", min: Some(0.0), min_exclusive: true)
+        "width": step::opt_double(20.0, help: "Tag width (mm)", min: Some(0.0), min_exclusive: true)
+        "height": step::opt_double(12.0, help: "Tag height (mm)", min: Some(0.0), min_exclusive: true)
+        "margin": step::opt_double(3.0, help: "Font margin (mm)")
+        "depth": step::opt_double(1.0, help: "Text depth/height (mm)", min: Some(0.0), min_exclusive: true)
+        "emboss": step::flag(help: "Emboss text above the tag")
+        "curve-segments": step::opt_int(0, help: "Convert cubic Bezier curves into segmented polylines in Blender output (default: off)")
+        "keep-modifiers": step::flag(help: "Keep boolean modifiers in Blender output")
+        "name": step::opt_string(short: 'n', help: "Name to engrave on the tag")
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "03-engraved-name-tag"
+        "Generate a keychain tag STEP model."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+
+    let length_mm = args.double_or("length", 50.0)
+    let width_mm = args.double_or("width", 20.0)
+    let height_mm = args.double_or("height", 12.0)
+    let margin_mm = args.double_or("margin", 3.0)
+    let depth_mm = args.double_or("depth", 1.0)
+    let emboss = args.flag("emboss")
+    let segments = args.int_or("curve-segments", 0)
+    let name = match args.string_opt("name") {
+        Some(n) => n
+        None => {
+            eprintln("--name is required")
+            process::exit(1)
+        }
+    }
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+    let font = step::load_font("baloo")?
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+
+    // Base tag.
+    let base = step::chamfer_block(
+        length_mm
+        width_mm
+        height_mm
+        chamfer: 1.0
+        fillet_radius: 0.0
+        fillet_segments: 10
+    )
+        .named("tag-base")
+        .colored(step::rgb(0.5, 0.0, 0.5))
+
+    let text_design = step::design(name: "text-only", documentation: args.documentation())
+        .add_text_on_face(
+            base
+            name
+            Top
+            font
+            margin: Some(margin_mm)
+            emboss_depth: Some(depth_mm)
+            color: step::ORANGE
+            emboss: emboss
+            segments: segments
+        )
+    let text_nodes = text_design.nodes
+
+    let design = if emboss {
+        step::design(name: "keychain-tag", documentation: args.documentation())
+            .add(base)
+            .add_all(text_nodes)
+            .moved(tx, ty, tz)
+    } else {
+        let engraved = step::difference(base, text_nodes, name: "tag-engraved")
+            .colored(step::rgb(0.5, 0.0, 0.5))
+        step::design(name: "keychain-tag", documentation: args.documentation())
+            .add(engraved)
+            .moved(tx, ty, tz)
+    }
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

@@ -1,0 +1,1015 @@
+//! STEP entity models: product family.
+//!
+//! Ported 1:1 from the reference implementation; the
+//! serialization (including spacing quirks) is the contract.
+
+use crate::entity::Entity
+use crate::fmt::{fmt_num, step_str}
+use crate::ids::{Ref}
+
+fn step_str_or_dollar(s: String) -> String {
+    if s == "$" { "$" } else { step_str(s) }
+}
+
+fn bool_to_step(b: bool) -> String {
+    if b { ".T." } else { ".F." }
+}
+
+// Represents an ADVANCED_BREP_SHAPE_REPRESENTATION entity.
+// Example from simple-box.step:
+//   ADVANCED_BREP_SHAPE_REPRESENTATION('cube-None',(#32),#187)
+pub struct AdvancedBrepShapeRepresentation {
+    pub name: String
+    pub items: Vec<Ref>
+    pub context_of_items: Ref
+}
+
+impl AdvancedBrepShapeRepresentation {
+    pub fn new(name: String, items: Vec<Ref>, context_of_items: Ref) -> AdvancedBrepShapeRepresentation {
+        AdvancedBrepShapeRepresentation { name: name, items: items, context_of_items: context_of_items }
+    }
+}
+
+impl Entity for AdvancedBrepShapeRepresentation {
+    fn to_step(self) -> String {
+        let items_str = self.items.map(|r| { f"#{r.id.value}" }).join(",")
+        let ctx_str = f"#{self.context_of_items.id.value}"
+        f"ADVANCED_BREP_SHAPE_REPRESENTATION({step_str(self.name)},({items_str}),{ctx_str})"
+    }
+}
+
+// Represents an APPLICATION_CONTEXT entity.
+// Example from simple-box.step:
+//   APPLICATION_CONTEXT('core data for automotive mechanical design processes')
+pub struct ApplicationContext {
+    pub application: String
+}
+
+impl ApplicationContext {
+    pub fn new(application: String) -> ApplicationContext {
+        ApplicationContext { application: application }
+    }
+}
+
+impl Entity for ApplicationContext {
+    fn to_step(self) -> String {
+        f"APPLICATION_CONTEXT({step_str_or_dollar(self.application)})"
+    }
+}
+
+// Represents an APPLICATION_PROTOCOL_DEFINITION entity.
+// Example from simple-box.step:
+//   APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2010,#21)
+pub struct ApplicationProtocolDefinition {
+    pub status: String
+    pub application_interpreted_model_schema_name: String
+    pub application_protocol_year: i64
+    pub application: Ref
+}
+
+impl ApplicationProtocolDefinition {
+    pub fn new(status: String, application_interpreted_model_schema_name: String, application_protocol_year: i64, application: Ref) -> ApplicationProtocolDefinition {
+        ApplicationProtocolDefinition { status: status, application_interpreted_model_schema_name: application_interpreted_model_schema_name, application_protocol_year: application_protocol_year, application: application }
+    }
+}
+
+impl Entity for ApplicationProtocolDefinition {
+    fn to_step(self) -> String {
+        let year_str = self.application_protocol_year.to_string()
+        let app_str = f"#{self.application.id.value}"
+        f"APPLICATION_PROTOCOL_DEFINITION({step_str_or_dollar(self.status)},{step_str_or_dollar(self.application_interpreted_model_schema_name)},{year_str},{app_str})"
+    }
+}
+
+// Represents an APPROVAL_PERSON_ORGANIZATION entity.
+// Example:
+//   APPROVAL_PERSON_ORGANIZATION(#10, #20, #30)
+// where #10 is PERSON/ORGANIZATION/PERSON_AND_ORGANIZATION,
+// #20 is APPROVAL, and #30 is APPROVAL_ROLE.
+pub struct ApprovalPersonOrganization {
+    pub person_organization: Ref
+    pub approval: Ref
+    pub role: Ref
+}
+
+impl ApprovalPersonOrganization {
+    pub fn new(person_organization: Ref, approval: Ref, role: Ref) -> ApprovalPersonOrganization {
+        ApprovalPersonOrganization { person_organization: person_organization, approval: approval, role: role }
+    }
+}
+
+impl Entity for ApprovalPersonOrganization {
+    fn to_step(self) -> String {
+        let po_str = f"#{self.person_organization.id.value}"
+        let approval_str = f"#{self.approval.id.value}"
+        let role_str = f"#{self.role.id.value}"
+        f"APPROVAL_PERSON_ORGANIZATION({po_str},{approval_str},{role_str})"
+    }
+}
+
+// Represents an APPROVAL_ROLE entity.
+// Example:
+//   APPROVAL_ROLE('role')
+pub struct ApprovalRole {
+    pub role: String
+}
+
+impl ApprovalRole {
+    pub fn new(role: String) -> ApprovalRole {
+        ApprovalRole { role: role }
+    }
+}
+
+impl Entity for ApprovalRole {
+    fn to_step(self) -> String {
+        f"APPROVAL_ROLE({step_str(self.role)})"
+    }
+}
+
+// Represents an APPROVAL_STATUS entity.
+// Example:
+//   APPROVAL_STATUS('approved')
+pub struct ApprovalStatus {
+    pub name: String
+}
+
+impl ApprovalStatus {
+    pub fn new(name: String) -> ApprovalStatus {
+        ApprovalStatus { name: name }
+    }
+}
+
+impl Entity for ApprovalStatus {
+    fn to_step(self) -> String {
+        f"APPROVAL_STATUS({step_str(self.name)})"
+    }
+}
+
+// Represents an APPROVAL entity.
+// Example:
+//   APPROVAL(#10, 'level')
+// where #10 is an APPROVAL_STATUS.
+pub struct Approval {
+    pub status: Ref
+    pub level: String
+}
+
+impl Approval {
+    pub fn new(status: Ref, level: String) -> Approval {
+        Approval { status: status, level: level }
+    }
+}
+
+impl Entity for Approval {
+    fn to_step(self) -> String {
+        let status_str = f"#{self.status.id.value}"
+        f"APPROVAL({status_str},{step_str(self.level)})"
+    }
+}
+
+// Represents a CALENDAR_DATE entity.
+// Example:
+//   CALENDAR_DATE(2025, 22, 12)
+pub struct CalendarDate {
+    pub year_component: i64
+    pub day_component: i64
+    pub month_component: i64
+}
+
+impl CalendarDate {
+    pub fn new(year_component: i64, day_component: i64, month_component: i64) -> CalendarDate {
+        CalendarDate { year_component: year_component, day_component: day_component, month_component: month_component }
+    }
+}
+
+impl Entity for CalendarDate {
+    fn to_step(self) -> String {
+        f"CALENDAR_DATE({self.year_component},{self.day_component},{self.month_component})"
+    }
+}
+
+// Represents a CERTIFICATION_TYPE entity.
+// Example:
+//   CERTIFICATION_TYPE('standard certification')
+pub struct CertificationType {
+    pub description: String
+}
+
+impl CertificationType {
+    pub fn new(description: String) -> CertificationType {
+        CertificationType { description: description }
+    }
+}
+
+impl Entity for CertificationType {
+    fn to_step(self) -> String {
+        f"CERTIFICATION_TYPE({step_str(self.description)})"
+    }
+}
+
+// Represents a CERTIFICATION entity.
+// Example:
+//   CERTIFICATION('name', 'purpose', #10)
+// where #10 is a CERTIFICATION_TYPE.
+pub struct Certification {
+    pub name: String
+    pub purpose: String
+    pub kind: Ref
+}
+
+impl Certification {
+    pub fn new(name: String, purpose: String, kind: Ref) -> Certification {
+        Certification { name: name, purpose: purpose, kind: kind }
+    }
+}
+
+impl Entity for Certification {
+    fn to_step(self) -> String {
+        let kind_str = f"#{self.kind.id.value}"
+        f"CERTIFICATION({step_str(self.name)},{step_str(self.purpose)},{kind_str})"
+    }
+}
+
+// Represents a CSG_SHAPE_REPRESENTATION entity.
+// Example:
+//   CSG_SHAPE_REPRESENTATION('name', (#10), #20)
+// where #10 is a CSG_SOLID.
+pub struct CsgShapeRepresentation {
+    pub name: String
+    pub items: Vec<Ref>
+    pub context_of_items: Ref
+}
+
+impl CsgShapeRepresentation {
+    pub fn new(name: String, items: Vec<Ref>, context_of_items: Ref) -> CsgShapeRepresentation {
+        CsgShapeRepresentation { name: name, items: items, context_of_items: context_of_items }
+    }
+}
+
+impl Entity for CsgShapeRepresentation {
+    fn to_step(self) -> String {
+        let items_str = self.items.map(|r| { f"#{r.id.value}" }).join(",")
+        let ctx_str = f"#{self.context_of_items.id.value}"
+        f"CSG_SHAPE_REPRESENTATION({step_str_or_dollar(self.name)},({items_str}),{ctx_str})"
+    }
+}
+
+// Represents a CONTEXT_DEPENDENT_SHAPE_REPRESENTATION entity.
+// Example from kicadoutput01-roundtrip.step:
+//   CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#434,#436)
+pub struct ContextDependentShapeRepresentation {
+    pub representation_relation: Ref
+    pub represented_product_relation: Ref
+}
+
+impl ContextDependentShapeRepresentation {
+    pub fn new(representation_relation: Ref, represented_product_relation: Ref) -> ContextDependentShapeRepresentation {
+        ContextDependentShapeRepresentation { representation_relation: representation_relation, represented_product_relation: represented_product_relation }
+    }
+}
+
+impl Entity for ContextDependentShapeRepresentation {
+    fn to_step(self) -> String {
+        let rr_str = f"#{self.representation_relation.id.value}"
+        let rpr_str = f"#{self.represented_product_relation.id.value}"
+        f"CONTEXT_DEPENDENT_SHAPE_REPRESENTATION({rr_str},{rpr_str})"
+    }
+}
+
+// Represents a DATE_AND_TIME entity.
+// Example:
+//   DATE_AND_TIME(#10, #20)
+// where #10 is a CALENDAR_DATE and #20 is a LOCAL_TIME.
+pub struct DateAndTime {
+    pub date_component: Ref
+    pub time_component: Ref
+}
+
+impl DateAndTime {
+    pub fn new(date_component: Ref, time_component: Ref) -> DateAndTime {
+        DateAndTime { date_component: date_component, time_component: time_component }
+    }
+}
+
+impl Entity for DateAndTime {
+    fn to_step(self) -> String {
+        let date_str = f"#{self.date_component.id.value}"
+        let time_str = f"#{self.time_component.id.value}"
+        f"DATE_AND_TIME({date_str},{time_str})"
+    }
+}
+
+// Represents a DESCRIPTIVE_REPRESENTATION_ITEM entity.
+// Example from MachineContactMedium.step:
+//   DESCRIPTIVE_REPRESENTATION_ITEM('Steel','Steel')
+pub struct DescriptiveRepresentationItem {
+    pub name: String
+    pub description: String
+}
+
+impl DescriptiveRepresentationItem {
+    pub fn new(name: String, description: String) -> DescriptiveRepresentationItem {
+        DescriptiveRepresentationItem { name: name, description: description }
+    }
+}
+
+impl Entity for DescriptiveRepresentationItem {
+    fn to_step(self) -> String {
+        f"DESCRIPTIVE_REPRESENTATION_ITEM({step_str(self.name)},{step_str(self.description)})"
+    }
+}
+
+// Represents a DOCUMENT_REFERENCE entity.
+// Example:
+//   DOCUMENT_REFERENCE('id', 'name', 'description', #10)
+// where #10 is a DOCUMENT.
+pub struct DocumentReference {
+    pub id: String
+    pub name: String
+    pub description: String
+    pub assigned_document: Ref
+}
+
+impl DocumentReference {
+    pub fn new(id: String, name: String, description: String, assigned_document: Ref) -> DocumentReference {
+        DocumentReference { id: id, name: name, description: description, assigned_document: assigned_document }
+    }
+}
+
+impl Entity for DocumentReference {
+    fn to_step(self) -> String {
+        let doc_str = f"#{self.assigned_document.id.value}"
+        f"DOCUMENT_REFERENCE({step_str(self.id)},{step_str(self.name)},{step_str(self.description)},{doc_str})"
+    }
+}
+
+// Represents a DOCUMENT_TYPE entity.
+// Example:
+//   DOCUMENT_TYPE('configuration controlled document')
+pub struct DocumentType {
+    pub product_data_type: String
+}
+
+impl DocumentType {
+    pub fn new(product_data_type: String) -> DocumentType {
+        DocumentType { product_data_type: product_data_type }
+    }
+}
+
+impl Entity for DocumentType {
+    fn to_step(self) -> String {
+        f"DOCUMENT_TYPE({step_str(self.product_data_type)})"
+    }
+}
+
+// Represents a DOCUMENT entity.
+// Example:
+//   DOCUMENT('id', 'name', 'description', #10)
+// where #10 is a DOCUMENT_TYPE.
+pub struct Document {
+    pub id: String
+    pub name: String
+    pub description: String
+    pub kind: Ref
+}
+
+impl Document {
+    pub fn new(id: String, name: String, description: String, kind: Ref) -> Document {
+        Document { id: id, name: name, description: description, kind: kind }
+    }
+}
+
+impl Entity for Document {
+    fn to_step(self) -> String {
+        let kind_str = f"#{self.kind.id.value}"
+        f"DOCUMENT({step_str(self.id)},{step_str(self.name)},{step_str(self.description)},{kind_str})"
+    }
+}
+
+// Represents an ITEM_DEFINED_TRANSFORMATION entity.
+// Example from kicadoutput01-roundtrip.step:
+//   ITEM_DEFINED_TRANSFORMATION('','',#11,#15)
+pub struct ItemDefinedTransformation {
+    pub name: String
+    pub description: String
+    pub transform_item_1: Ref
+    pub transform_item_2: Ref
+}
+
+impl ItemDefinedTransformation {
+    pub fn new(name: String, description: String, transform_item_1: Ref, transform_item_2: Ref) -> ItemDefinedTransformation {
+        ItemDefinedTransformation { name: name, description: description, transform_item_1: transform_item_1, transform_item_2: transform_item_2 }
+    }
+}
+
+impl Entity for ItemDefinedTransformation {
+    fn to_step(self) -> String {
+        let i1_str = f"#{self.transform_item_1.id.value}"
+        let i2_str = f"#{self.transform_item_2.id.value}"
+        f"ITEM_DEFINED_TRANSFORMATION({step_str_or_dollar(self.name)},{step_str_or_dollar(self.description)},{i1_str},{i2_str})"
+    }
+}
+
+// Represents a LOCAL_TIME entity.
+// Example:
+//   LOCAL_TIME(12, 30, 0.0, #10)
+// where #10 is a COORDINATED_UNIVERSAL_TIME_OFFSET.
+pub struct LocalTime {
+    pub hour_component: i64
+    pub minute_component: i64
+    pub second_component: f64
+    pub zone: Ref
+}
+
+impl LocalTime {
+    pub fn new(hour_component: i64, minute_component: i64, second_component: f64, zone: Ref) -> LocalTime {
+        LocalTime { hour_component: hour_component, minute_component: minute_component, second_component: second_component, zone: zone }
+    }
+}
+
+impl Entity for LocalTime {
+    fn to_step(self) -> String {
+        let zone_str = f"#{self.zone.id.value}"
+        f"LOCAL_TIME({self.hour_component},{self.minute_component},{fmt_num(self.second_component)},{zone_str})"
+    }
+}
+
+// Represents a MEASURE_REPRESENTATION_ITEM entity.
+// Example from MachineContactMedium.step:
+//   MEASURE_REPRESENTATION_ITEM('density measure',POSITIVE_RATIO_MEASURE(7850.),#589)
+pub enum MeasureValueComponent {
+    PositiveRatioMeasure(crate::entities::units::PositiveRatioMeasure)
+    Raw(String)
+}
+
+pub struct MeasureRepresentationItem {
+    pub name: String
+    pub value_component: MeasureValueComponent
+    pub unit_component: Ref
+}
+
+impl MeasureRepresentationItem {
+    pub fn new(name: String, value_component: MeasureValueComponent, unit_component: Ref) -> MeasureRepresentationItem {
+        MeasureRepresentationItem { name: name, value_component: value_component, unit_component: unit_component }
+    }
+}
+
+impl Entity for MeasureRepresentationItem {
+    fn to_step(self) -> String {
+        let unit_str = f"#{self.unit_component.id.value}"
+        let value_str = match self.value_component {
+            MeasureValueComponent::PositiveRatioMeasure(m) => m.to_step()
+            MeasureValueComponent::Raw(s) => s
+        }
+        f"MEASURE_REPRESENTATION_ITEM({step_str(self.name)},{value_str},{unit_str})"
+    }
+}
+
+// Represents a NEXT_ASSEMBLY_USAGE_OCCURRENCE entity.
+// Example from kicadoutput01-roundtrip.step:
+//   NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','R2',$,#5,#35,$)
+pub struct NextAssemblyUsageOccurrence {
+    pub id: String
+    pub name: String
+    pub description: String
+    pub relating_product_definition: Ref
+    pub related_product_definition: Ref
+    pub reference_designator: String
+}
+
+impl NextAssemblyUsageOccurrence {
+    pub fn new(id: String, name: String, description: String, relating_product_definition: Ref, related_product_definition: Ref, reference_designator: String) -> NextAssemblyUsageOccurrence {
+        NextAssemblyUsageOccurrence { id: id, name: name, description: description, relating_product_definition: relating_product_definition, related_product_definition: related_product_definition, reference_designator: reference_designator }
+    }
+}
+
+impl Entity for NextAssemblyUsageOccurrence {
+    fn to_step(self) -> String {
+        let relating_str = f"#{self.relating_product_definition.id.value}"
+        let related_str = f"#{self.related_product_definition.id.value}"
+        f"NEXT_ASSEMBLY_USAGE_OCCURRENCE({step_str(self.id)},{step_str(self.name)},{step_str_or_dollar(self.description)},{relating_str},{related_str},{step_str_or_dollar(self.reference_designator)})"
+    }
+}
+
+// Represents an ORGANIZATION entity.
+// Example:
+//   ORGANIZATION('id', 'name', 'description')
+pub struct Organization {
+    pub id: String
+    pub name: String
+    pub description: String
+}
+
+impl Organization {
+    pub fn new(id: String, name: String, description: String) -> Organization {
+        Organization { id: id, name: name, description: description }
+    }
+}
+
+impl Entity for Organization {
+    fn to_step(self) -> String {
+        f"ORGANIZATION({step_str(self.id)},{step_str(self.name)},{step_str(self.description)})"
+    }
+}
+
+// Represents a PERSON_AND_ORGANIZATION entity.
+// Example:
+//   PERSON_AND_ORGANIZATION(#10, #20)
+// where #10 is a PERSON and #20 is an ORGANIZATION.
+pub struct PersonAndOrganization {
+    pub the_person: Ref
+    pub the_organization: Ref
+}
+
+impl PersonAndOrganization {
+    pub fn new(the_person: Ref, the_organization: Ref) -> PersonAndOrganization {
+        PersonAndOrganization { the_person: the_person, the_organization: the_organization }
+    }
+}
+
+impl Entity for PersonAndOrganization {
+    fn to_step(self) -> String {
+        let person_str = f"#{self.the_person.id.value}"
+        let org_str = f"#{self.the_organization.id.value}"
+        f"PERSON_AND_ORGANIZATION({person_str},{org_str})"
+    }
+}
+
+// Represents a PERSON entity.
+// Example:
+//   PERSON('id', 'last', 'first', ('middle'), ('prefix'), ('suffix'))
+pub struct Person {
+    pub id: String
+    pub last_name: String
+    pub first_name: String
+    pub middle_names: Vec<String>
+    pub prefix_titles: Vec<String>
+    pub suffix_titles: Vec<String>
+}
+
+impl Person {
+    pub fn new(id: String, last_name: String, first_name: String, middle_names: Vec<String>, prefix_titles: Vec<String>, suffix_titles: Vec<String>) -> Person {
+        Person { id: id, last_name: last_name, first_name: first_name, middle_names: middle_names, prefix_titles: prefix_titles, suffix_titles: suffix_titles }
+    }
+}
+
+impl Entity for Person {
+    fn to_step(self) -> String {
+        let middles = "(" + self.middle_names.map(step_str).join(",") + ")"
+        let prefixes = "(" + self.prefix_titles.map(step_str).join(",") + ")"
+        let suffixes = "(" + self.suffix_titles.map(step_str).join(",") + ")"
+        f"PERSON({step_str(self.id)},{step_str(self.last_name)},{step_str(self.first_name)},{middles},{prefixes},{suffixes})"
+    }
+}
+
+// Represents a PRODUCT_DEFINITION_FORMATION entity.
+// Example from MachineContactMedium.step:
+//   PRODUCT_DEFINITION_FORMATION('',$,#1658)
+pub struct ProductDefinitionFormation {
+    pub id: String
+    pub description: String
+    pub of_product: Ref
+}
+
+impl ProductDefinitionFormation {
+    pub fn new(id: String, description: String, of_product: Ref) -> ProductDefinitionFormation {
+        ProductDefinitionFormation { id: id, description: description, of_product: of_product }
+    }
+}
+
+impl Entity for ProductDefinitionFormation {
+    fn to_step(self) -> String {
+        let product_str = f"#{self.of_product.id.value}"
+        f"PRODUCT_DEFINITION_FORMATION({step_str_or_dollar(self.id)},{step_str_or_dollar(self.description)},{product_str})"
+    }
+}
+
+// Represents a PRODUCT_DEFINITION_SHAPE entity.
+// Example from simple-box.step:
+//   PRODUCT_DEFINITION_SHAPE('','',#14)
+pub struct ProductDefinitionShape {
+    pub name: String
+    pub description: String
+    pub definition: Ref
+}
+
+impl ProductDefinitionShape {
+    pub fn new(name: String, description: String, definition: Ref) -> ProductDefinitionShape {
+        ProductDefinitionShape { name: name, description: description, definition: definition }
+    }
+}
+
+impl Entity for ProductDefinitionShape {
+    fn to_step(self) -> String {
+        let def_str = f"#{self.definition.id.value}"
+        f"PRODUCT_DEFINITION_SHAPE({step_str_or_dollar(self.name)},{step_str_or_dollar(self.description)},{def_str})"
+    }
+}
+
+// Represents a PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE entity.
+// Example from simple-box.step:
+//   PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE(' ',' ',#18,.NOT_KNOWN.)
+pub struct ProductDefinitionFormationWithSpecifiedSource {
+    pub id: String
+    pub description: String
+    pub of_product: Ref
+    pub make_or_buy: String
+}
+
+impl ProductDefinitionFormationWithSpecifiedSource {
+    pub fn new(id: String, description: String, of_product: Ref, make_or_buy: String) -> ProductDefinitionFormationWithSpecifiedSource {
+        ProductDefinitionFormationWithSpecifiedSource { id: id, description: description, of_product: of_product, make_or_buy: make_or_buy }
+    }
+}
+
+impl Entity for ProductDefinitionFormationWithSpecifiedSource {
+    fn to_step(self) -> String {
+        let product_str = f"#{self.of_product.id.value}"
+        // make_or_buy is an enumeration like .NOT_KNOWN.
+        f"PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE({step_str_or_dollar(self.id)},{step_str_or_dollar(self.description)},{product_str},{self.make_or_buy})"
+    }
+}
+
+// Represents a PRODUCT_RELATED_PRODUCT_CATEGORY entity.
+// Example from simple-box.step:
+//   PRODUCT_RELATED_PRODUCT_CATEGORY('part','',(#18))
+pub struct ProductRelatedProductCategory {
+    pub name: String
+    pub description: String
+    pub products: Vec<Ref>
+}
+
+impl ProductRelatedProductCategory {
+    pub fn new(name: String, description: String, products: Vec<Ref>) -> ProductRelatedProductCategory {
+        ProductRelatedProductCategory { name: name, description: description, products: products }
+    }
+}
+
+impl Entity for ProductRelatedProductCategory {
+    fn to_step(self) -> String {
+        let products_str = self.products.map(|p| { f"#{p.id.value}" }).join(",")
+        f"PRODUCT_RELATED_PRODUCT_CATEGORY({step_str_or_dollar(self.name)},{step_str_or_dollar(self.description)},({products_str}))"
+    }
+}
+
+// Represents a PRODUCT_CONTEXT entity.
+// Example from simple-box.step:
+//   PRODUCT_CONTEXT(' ',#21,'mechanical')
+pub struct ProductContext {
+    pub name: String
+    pub frame_of_reference: Ref
+    pub discipline_type: String
+}
+
+impl ProductContext {
+    pub fn new(name: String, frame_of_reference: Ref, discipline_type: String) -> ProductContext {
+        ProductContext { name: name, frame_of_reference: frame_of_reference, discipline_type: discipline_type }
+    }
+}
+
+impl Entity for ProductContext {
+    fn to_step(self) -> String {
+        let frame_str = f"#{self.frame_of_reference.id.value}"
+        f"PRODUCT_CONTEXT({step_str_or_dollar(self.name)},{frame_str},{step_str_or_dollar(self.discipline_type)})"
+    }
+}
+
+// Represents a PRODUCT_DEFINITION_CONTEXT entity.
+// Example from simple-box.step:
+//   PRODUCT_DEFINITION_CONTEXT('part definition',#21,'design')
+pub struct ProductDefinitionContext {
+    pub name: String
+    pub application: Ref
+    pub life_cycle_stage: String
+}
+
+impl ProductDefinitionContext {
+    pub fn new(name: String, application: Ref, life_cycle_stage: String) -> ProductDefinitionContext {
+        ProductDefinitionContext { name: name, application: application, life_cycle_stage: life_cycle_stage }
+    }
+}
+
+impl Entity for ProductDefinitionContext {
+    fn to_step(self) -> String {
+        let app_str = f"#{self.application.id.value}"
+        f"PRODUCT_DEFINITION_CONTEXT({step_str_or_dollar(self.name)},{app_str},{step_str_or_dollar(self.life_cycle_stage)})"
+    }
+}
+
+// Represents a PRODUCT_DEFINITION entity.
+// Example from simple-box.step:
+//   PRODUCT_DEFINITION(' ','',#16,#15)
+pub struct ProductDefinition {
+    pub id: String
+    pub description: String
+    pub formation: Ref
+    pub frame_of_reference: Ref
+}
+
+impl ProductDefinition {
+    pub fn new(id: String, description: String, formation: Ref, frame_of_reference: Ref) -> ProductDefinition {
+        ProductDefinition { id: id, description: description, formation: formation, frame_of_reference: frame_of_reference }
+    }
+}
+
+impl Entity for ProductDefinition {
+    fn to_step(self) -> String {
+        let formation_str = f"#{self.formation.id.value}"
+        let ctx_str = f"#{self.frame_of_reference.id.value}"
+        f"PRODUCT_DEFINITION({step_str_or_dollar(self.id)},{step_str_or_dollar(self.description)},{formation_str},{ctx_str})"
+    }
+}
+
+// Represents a PRODUCT entity.
+// Example from simple-box.step:
+//   PRODUCT('cube','cube',' ',(#19))
+pub struct Product {
+    pub name: String
+    pub id: String
+    pub description: String
+    pub frame_of_reference: Vec<Ref>
+}
+
+impl Product {
+    pub fn new(name: String, id: String, description: String, frame_of_reference: Vec<Ref>) -> Product {
+        Product { name: name, id: id, description: description, frame_of_reference: frame_of_reference }
+    }
+}
+
+impl Entity for Product {
+    fn to_step(self) -> String {
+        let refs_str = self.frame_of_reference
+            .map(|r| { f"#{r.id.value}" })
+            .join(",")
+        f"PRODUCT({step_str_or_dollar(self.name)},{step_str_or_dollar(self.id)},{step_str_or_dollar(self.description)},({refs_str}))"
+    }
+}
+
+// Represents a PROPERTY_DEFINITION_REPRESENTATION entity.
+// Example from MachineContactMedium.step:
+//   PROPERTY_DEFINITION_REPRESENTATION(#596,#593)
+pub struct PropertyDefinitionRepresentation {
+    pub definition: Ref
+    pub used_representation: Ref
+}
+
+impl PropertyDefinitionRepresentation {
+    pub fn new(definition: Ref, used_representation: Ref) -> PropertyDefinitionRepresentation {
+        PropertyDefinitionRepresentation { definition: definition, used_representation: used_representation }
+    }
+}
+
+impl Entity for PropertyDefinitionRepresentation {
+    fn to_step(self) -> String {
+        let def_str = f"#{self.definition.id.value}"
+        let rep_str = f"#{self.used_representation.id.value}"
+        f"PROPERTY_DEFINITION_REPRESENTATION({def_str},{rep_str})"
+    }
+}
+
+// Represents a PROPERTY_DEFINITION entity.
+// Example from MachineContactMedium.step:
+//   PROPERTY_DEFINITION('material property','material name',#1652)
+pub struct PropertyDefinition {
+    pub name: String
+    pub description: String
+    pub definition: Ref
+}
+
+impl PropertyDefinition {
+    pub fn new(name: String, description: String, definition: Ref) -> PropertyDefinition {
+        PropertyDefinition { name: name, description: description, definition: definition }
+    }
+}
+
+impl Entity for PropertyDefinition {
+    fn to_step(self) -> String {
+        let def_str = f"#{self.definition.id.value}"
+        f"PROPERTY_DEFINITION({step_str_or_dollar(self.name)},{step_str_or_dollar(self.description)},{def_str})"
+    }
+}
+
+// Represents a REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION entity.
+//
+// Example (from kicadoutput01.step complex instance part):
+//   REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#435)
+pub struct RepresentationRelationshipWithTransformation {
+    pub transformation: Ref
+}
+
+impl RepresentationRelationshipWithTransformation {
+    pub fn new(transformation: Ref) -> RepresentationRelationshipWithTransformation {
+        RepresentationRelationshipWithTransformation { transformation: transformation }
+    }
+}
+
+impl Entity for RepresentationRelationshipWithTransformation {
+    fn to_step(self) -> String {
+        let t_str = f"#{self.transformation.id.value}"
+        f"REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION({t_str})"
+    }
+}
+
+// Represents a REPRESENTATION_RELATIONSHIP entity.
+//
+// Example (from kicadoutput01.step complex instance part):
+//   REPRESENTATION_RELATIONSHIP('','',#40,#10)
+pub struct RepresentationRelationship {
+    pub name: String
+    pub description: String
+    pub rep_1: Ref
+    pub rep_2: Ref
+}
+
+impl RepresentationRelationship {
+    pub fn new(name: String, description: String, rep_1: Ref, rep_2: Ref) -> RepresentationRelationship {
+        RepresentationRelationship { name: name, description: description, rep_1: rep_1, rep_2: rep_2 }
+    }
+}
+
+impl Entity for RepresentationRelationship {
+    fn to_step(self) -> String {
+        let rep_1_str = f"#{self.rep_1.id.value}"
+        let rep_2_str = f"#{self.rep_2.id.value}"
+        f"REPRESENTATION_RELATIONSHIP({step_str_or_dollar(self.name)},{step_str_or_dollar(self.description)},{rep_1_str},{rep_2_str})"
+    }
+}
+
+// Represents a REPRESENTATION entity.
+// Example from MachineContactMedium.step:
+//   REPRESENTATION('material name',(#595),#1642)
+pub struct Representation {
+    pub name: String
+    pub items: Vec<Ref>
+    pub context_of_items: Ref
+}
+
+impl Representation {
+    pub fn new(name: String, items: Vec<Ref>, context_of_items: Ref) -> Representation {
+        Representation { name: name, items: items, context_of_items: context_of_items }
+    }
+}
+
+impl Entity for Representation {
+    fn to_step(self) -> String {
+        let items_str = self.items.map(|r| { f"#{r.id.value}" }).join(",")
+        let ctx_str = f"#{self.context_of_items.id.value}"
+        f"REPRESENTATION({step_str_or_dollar(self.name)},({items_str}),{ctx_str})"
+    }
+}
+
+// Represents a SECURITY_CLASSIFICATION entity.
+// Example:
+//   SECURITY_CLASSIFICATION('name', 'purpose', #10)
+// where #10 is a SECURITY_CLASSIFICATION_LEVEL.
+pub struct SecurityClassification {
+    pub name: String
+    pub purpose: String
+    pub security_level: Ref
+}
+
+impl SecurityClassification {
+    pub fn new(name: String, purpose: String, security_level: Ref) -> SecurityClassification {
+        SecurityClassification { name: name, purpose: purpose, security_level: security_level }
+    }
+}
+
+impl Entity for SecurityClassification {
+    fn to_step(self) -> String {
+        let level_str = f"#{self.security_level.id.value}"
+        f"SECURITY_CLASSIFICATION({step_str(self.name)},{step_str(self.purpose)},{level_str})"
+    }
+}
+
+// Represents a SECURITY_CLASSIFICATION_LEVEL entity.
+// Example:
+//   SECURITY_CLASSIFICATION_LEVEL('unclassified')
+pub struct SecurityClassificationLevel {
+    pub name: String
+}
+
+impl SecurityClassificationLevel {
+    pub fn new(name: String) -> SecurityClassificationLevel {
+        SecurityClassificationLevel { name: name }
+    }
+}
+
+impl Entity for SecurityClassificationLevel {
+    fn to_step(self) -> String {
+        f"SECURITY_CLASSIFICATION_LEVEL({step_str(self.name)})"
+    }
+}
+
+// Represents a SHAPE_ASPECT entity.
+// Example:
+//   SHAPE_ASPECT('name', 'description', #10, .T.)
+// where #10 is a PRODUCT_DEFINITION_SHAPE.
+pub struct ShapeAspect {
+    pub name: String
+    pub description: String
+    pub of_shape: Ref
+    pub product_definitional: String // .T., .F., .U.
+}
+
+impl ShapeAspect {
+    pub fn new(name: String, description: String, of_shape: Ref, product_definitional: String) -> ShapeAspect {
+        ShapeAspect { name: name, description: description, of_shape: of_shape, product_definitional: product_definitional }
+    }
+}
+
+impl Entity for ShapeAspect {
+    fn to_step(self) -> String {
+        let shape_str = f"#{self.of_shape.id.value}"
+        f"SHAPE_ASPECT({step_str(self.name)},{step_str(self.description)},{shape_str},{self.product_definitional})"
+    }
+}
+
+// Represents a SHAPE_DEFINITION_REPRESENTATION entity.
+// Example from simple-box.step:
+//   SHAPE_DEFINITION_REPRESENTATION(#13,#22)
+pub struct ShapeDefinitionRepresentation {
+    pub definition: Ref
+    pub used_representation: Ref
+}
+
+impl ShapeDefinitionRepresentation {
+    pub fn new(definition: Ref, used_representation: Ref) -> ShapeDefinitionRepresentation {
+        ShapeDefinitionRepresentation { definition: definition, used_representation: used_representation }
+    }
+}
+
+impl Entity for ShapeDefinitionRepresentation {
+    fn to_step(self) -> String {
+        let def_str = f"#{self.definition.id.value}"
+        let rep_str = f"#{self.used_representation.id.value}"
+        f"SHAPE_DEFINITION_REPRESENTATION({def_str},{rep_str})"
+    }
+}
+
+// Represents a SHAPE_REPRESENTATION_RELATIONSHIP entity.
+// Example from simple-box.step:
+//   SHAPE_REPRESENTATION_RELATIONSHIP('None','relationship between ...',#22,#11)
+pub struct ShapeRepresentationRelationship {
+    pub name: String
+    pub description: String
+    pub rep_1: Ref
+    pub rep_2: Ref
+}
+
+impl ShapeRepresentationRelationship {
+    pub fn new(name: String, description: String, rep_1: Ref, rep_2: Ref) -> ShapeRepresentationRelationship {
+        ShapeRepresentationRelationship { name: name, description: description, rep_1: rep_1, rep_2: rep_2 }
+    }
+}
+
+impl Entity for ShapeRepresentationRelationship {
+    fn to_step(self) -> String {
+        let rep_1_str = f"#{self.rep_1.id.value}"
+        let rep_2_str = f"#{self.rep_2.id.value}"
+        f"SHAPE_REPRESENTATION_RELATIONSHIP({step_str_or_dollar(self.name)},{step_str_or_dollar(self.description)},{rep_1_str},{rep_2_str})"
+    }
+}
+
+// Represents a SHAPE_REPRESENTATION entity.
+// Example from simple-box.step:
+//   SHAPE_REPRESENTATION('cube-None',(#126),#187)
+pub struct ShapeRepresentation {
+    pub name: String
+    pub items: Vec<Ref>
+    pub context_of_items: Ref
+}
+
+impl ShapeRepresentation {
+    pub fn new(name: String, items: Vec<Ref>, context_of_items: Ref) -> ShapeRepresentation {
+        ShapeRepresentation { name: name, items: items, context_of_items: context_of_items }
+    }
+}
+
+impl Entity for ShapeRepresentation {
+    fn to_step(self) -> String {
+        let items_str = self.items.map(|r| { f"#{r.id.value}" }).join(",")
+        let ctx_str = f"#{self.context_of_items.id.value}"
+        f"SHAPE_REPRESENTATION({step_str_or_dollar(self.name)},({items_str}),{ctx_str})"
+    }
+}
+
+// Represents a COORDINATED_UNIVERSAL_TIME_OFFSET entity.
+// Example:
+//   COORDINATED_UNIVERSAL_TIME_OFFSET(8, 0, .AHEAD.)
+pub struct CoordinatedUniversalTimeOffset {
+    pub hour_offset: i64
+    pub minute_offset: i64
+    pub sense: String // .AHEAD., .BEHIND., .EXACT.
+}
+
+impl CoordinatedUniversalTimeOffset {
+    pub fn new(hour_offset: i64, minute_offset: i64, sense: String) -> CoordinatedUniversalTimeOffset {
+        CoordinatedUniversalTimeOffset { hour_offset: hour_offset, minute_offset: minute_offset, sense: sense }
+    }
+}
+
+impl Entity for CoordinatedUniversalTimeOffset {
+    fn to_step(self) -> String {
+        f"COORDINATED_UNIVERSAL_TIME_OFFSET({self.hour_offset},{self.minute_offset},{self.sense})"
+    }
+}

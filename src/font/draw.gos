@@ -1,0 +1,445 @@
+//! Drawing primitives for fonts: anchors, paths, compound paths, and graphics.
+//!
+//! This is the subset of the Apache-2.0 `gmlewis/fonts/draw` package that the
+//! CAD text builder uses. Styling (fills and strokes) is intentionally absent:
+//! the CAD layer only needs geometry plus each subpath's `clear` flag, which
+//! identifies holes inside a glyph (for example the counters of "8" or "O").
+//!
+//! Coordinates here are already scaled: `to_graphic` multiplies font units by
+//! `size / units_per_em`, so a glyph's em square becomes `size` units.
+
+use crate::font::layout::Alignment
+use crate::font::model::{Font, FontError, Glyph, Vec2}
+use crate::font::svg::{split_path, SvgCmd}
+
+/// A single point in a path. Handles are offsets relative to `position`.
+pub struct Anchor {
+    /// Absolute position.
+    pub position: Vec2
+    /// Relative offset of the incoming curve handle.
+    pub handle_in: Vec2
+    /// Relative offset of the outgoing curve handle.
+    pub handle_out: Vec2
+}
+
+impl Anchor {
+    /// Create an anchor. Handles default to zero (a sharp corner).
+    pub fn new(
+        position: Vec2
+        handle_in: Vec2 = Vec2 { x: 0.0, y: 0.0 }
+        handle_out: Vec2 = Vec2 { x: 0.0, y: 0.0 }
+    ) -> Anchor {
+        Anchor { position: position, handle_in: handle_in, handle_out: handle_out }
+    }
+
+    /// Scale and translate this anchor. Handles are scaled but not translated.
+    pub fn transformed(self, sx: f64, sy: f64, tx: f64, ty: f64) -> Anchor {
+        Anchor {
+            position: Vec2 {
+                x: self.position.x * sx + tx
+                y: self.position.y * sy + ty
+            }
+            handle_in: Vec2 { x: self.handle_in.x * sx, y: self.handle_in.y * sy }
+            handle_out: Vec2 { x: self.handle_out.x * sx, y: self.handle_out.y * sy }
+        }
+    }
+
+    /// Reverse the direction of this anchor by swapping its handles.
+    pub fn reverse(self) -> Anchor {
+        Anchor {
+            position: self.position
+            handle_in: self.handle_out
+            handle_out: self.handle_in
+        }
+    }
+
+    /// True when both handles are exactly zero.
+    pub fn has_zero_handles(self) -> bool {
+        self.handle_in.is_zero() && self.handle_out.is_zero()
+    }
+}
+
+/// An open or closed sequence of anchors.
+///
+/// `clear = true` marks a subpath that cuts a hole in the glyph.
+pub struct Path {
+    pub anchors: Vec<Anchor>
+    pub closed: bool
+    pub clear: bool
+}
+
+impl Path {
+    /// Create a path from anchors.
+    pub fn new(
+        anchors: Vec<Anchor> = #[]
+        closed: bool = false
+        clear: bool = false
+    ) -> Path {
+        Path { anchors: anchors, closed: closed, clear: clear }
+    }
+
+    /// Build a path from bare points, connecting them with straight lines.
+    pub fn from_points(points: Vec<Vec2>, closed: bool = false) -> Path {
+        let mut anchors: Vec<Anchor> = #[]
+        for point in points {
+            anchors.push(Anchor::new(point))
+        }
+        Path { anchors: anchors, closed: closed, clear: false }
+    }
+
+    /// Wrap this path in a `Graphic`.
+    pub fn as_graphic(self) -> Graphic {
+        Graphic::Path(self)
+    }
+
+    /// Scale and translate every anchor.
+    pub fn transformed(self, sx: f64, sy: f64, tx: f64, ty: f64) -> Path {
+        let mut anchors: Vec<Anchor> = #[]
+        for anchor in self.anchors {
+            anchors.push(anchor.transformed(sx, sy, tx, ty))
+        }
+        Path { anchors: anchors, closed: self.closed, clear: self.clear }
+    }
+
+    /// Translate every anchor by `v`.
+    pub fn translate(self, v: Vec2) -> Path {
+        self.transformed(1.0, 1.0, v.x, v.y)
+    }
+
+    /// Return this path with its anchors in reverse order.
+    pub fn reverse(self) -> Path {
+        let mut anchors: Vec<Anchor> = #[]
+        let mut i = self.anchors.len() - 1
+        while i >= 0 {
+            anchors.push(self.anchors[i].reverse())
+            i -= 1
+        }
+        Path { anchors: anchors, closed: self.closed, clear: self.clear }
+    }
+
+    /// The number of anchors.
+    pub fn len(self) -> i64 {
+        self.anchors.len() as i64
+    }
+}
+
+/// A group of subpaths that together form one glyph.
+pub struct CompoundPath {
+    pub paths: Vec<Path>
+}
+
+impl CompoundPath {
+    /// Create a compound path.
+    pub fn new(paths: Vec<Path> = #[]) -> CompoundPath {
+        CompoundPath { paths: paths }
+    }
+
+    /// Wrap this compound path in a `Graphic`.
+    pub fn as_graphic(self) -> Graphic {
+        Graphic::CompoundPath(self)
+    }
+
+    /// Scale and translate every contained path.
+    pub fn transformed(self, sx: f64, sy: f64, tx: f64, ty: f64) -> CompoundPath {
+        let mut paths: Vec<Path> = #[]
+        for path in self.paths {
+            paths.push(path.transformed(sx, sy, tx, ty))
+        }
+        CompoundPath { paths: paths }
+    }
+
+    /// Every anchor from every path, in order.
+    pub fn all_anchors(self) -> Vec<Anchor> {
+        let mut anchors: Vec<Anchor> = #[]
+        for path in self.paths {
+            for anchor in path.anchors {
+                anchors.push(anchor)
+            }
+        }
+        anchors
+    }
+}
+
+/// A homogeneous collection of graphics.
+pub struct Group {
+    pub items: Vec<Graphic>
+}
+
+impl Group {
+    /// Create a group.
+    pub fn new(items: Vec<Graphic> = #[]) -> Group {
+        Group { items: items }
+    }
+
+    /// Wrap this group in a `Graphic`.
+    pub fn as_graphic(self) -> Graphic {
+        Graphic::Group(self)
+    }
+
+    /// Scale and translate every item.
+    pub fn transformed(self, sx: f64, sy: f64, tx: f64, ty: f64) -> Group {
+        let mut items: Vec<Graphic> = #[]
+        for item in self.items {
+            items.push(item.transformed(sx, sy, tx, ty))
+        }
+        Group { items: items }
+    }
+
+    /// Every path from every item.
+    pub fn all_paths(self) -> Vec<Path> {
+        let mut paths: Vec<Path> = #[]
+        for item in self.items {
+            for path in item.all_paths() {
+                paths.push(path)
+            }
+        }
+        paths
+    }
+}
+
+/// A drawable graphic: either a single path, a compound path, or a group.
+pub enum Graphic {
+    CompoundPath(CompoundPath)
+    Group(Group)
+    Path(Path)
+}
+
+impl Graphic {
+    /// Every `Path` contained in this graphic, flattened in order.
+    pub fn all_paths(self) -> Vec<Path> {
+        match self {
+            Graphic::CompoundPath(cp) => cp.paths
+            Graphic::Group(g) => g.all_paths()
+            Graphic::Path(p) => #[p]
+        }
+    }
+
+    /// Every `Path` and `CompoundPath` contained in this graphic.
+    pub fn all_paths_and_compound_paths(self) -> Vec<Graphic> {
+        match self {
+            Graphic::CompoundPath(_) | Graphic::Path(_) => #[self]
+            Graphic::Group(g) => {
+                let mut out: Vec<Graphic> = #[]
+                for item in g.items {
+                    for g2 in item.all_paths_and_compound_paths() {
+                        out.push(g2)
+                    }
+                }
+                out
+            }
+        }
+    }
+
+    /// Every anchor contained in this graphic.
+    pub fn all_anchors(self) -> Vec<Anchor> {
+        match self {
+            Graphic::CompoundPath(cp) => cp.all_anchors()
+            Graphic::Group(g) => {
+                let mut out: Vec<Anchor> = #[]
+                for item in g.items {
+                    for anchor in item.all_anchors() {
+                        out.push(anchor)
+                    }
+                }
+                out
+            }
+            Graphic::Path(p) => p.anchors
+        }
+    }
+
+    /// The primitive graphics that make up this graphic.
+    pub fn primitives(self) -> Vec<Graphic> {
+        match self {
+            Graphic::CompoundPath(cp) => {
+                let mut out: Vec<Graphic> = #[]
+                for path in cp.paths {
+                    out.push(Graphic::Path(path))
+                }
+                out
+            }
+            Graphic::Group(g) => g.items
+            Graphic::Path(_) => #[self]
+        }
+    }
+
+    /// Scale and translate this graphic.
+    pub fn transformed(self, sx: f64, sy: f64, tx: f64, ty: f64) -> Graphic {
+        match self {
+            Graphic::CompoundPath(cp) => Graphic::CompoundPath(cp.transformed(sx, sy, tx, ty))
+            Graphic::Group(g) => Graphic::Group(g.transformed(sx, sy, tx, ty))
+            Graphic::Path(p) => Graphic::Path(p.transformed(sx, sy, tx, ty))
+        }
+    }
+
+    /// Translate this graphic by `v`.
+    pub fn translate(self, v: Vec2) -> Graphic {
+        self.transformed(1.0, 1.0, v.x, v.y)
+    }
+
+    /// Uniformly scale this graphic about the origin.
+    pub fn scale(self, s: f64) -> Graphic {
+        self.transformed(s, s, 0.0, 0.0)
+    }
+
+    /// Reverse every path in this graphic.
+    pub fn reverse(self) -> Graphic {
+        match self {
+            Graphic::CompoundPath(cp) => {
+                let mut paths: Vec<Path> = #[]
+                for path in cp.paths {
+                    paths.push(path.reverse())
+                }
+                Graphic::CompoundPath(CompoundPath { paths: paths })
+            }
+            Graphic::Group(g) => {
+                let mut items: Vec<Graphic> = #[]
+                for item in g.items {
+                    items.push(item.reverse())
+                }
+                Graphic::Group(Group { items: items })
+            }
+            Graphic::Path(p) => Graphic::Path(p.reverse())
+        }
+    }
+}
+
+/// Render text into a scaled `CompoundPath` graphic.
+///
+/// `size` is the em-square size in output units, so every font unit is
+/// multiplied by `size / units_per_em`. `alignment` and `y_up` are forwarded
+/// to `Font::gen_path`; the CAD builder uses `Alignment::Center` with
+/// `y_up = true`.
+pub fn to_graphic(
+    font: Font
+    text: String
+    size: f64 = 1.0
+    alignment: Alignment = Alignment::Unchanged
+    y_up: bool = false
+) -> Result<Graphic, FontError> {
+    let glyph = font.gen_path(text, alignment: alignment, y_up: y_up)?
+    if font.units_per_em == 0.0 {
+        return Err(FontError::new("to_graphic: font has units_per_em == 0"))
+    }
+    let scale = size / font.units_per_em
+    let compound = svgpath_to_compound_path(glyph, scale, scale)?
+    Ok(Graphic::CompoundPath(compound))
+}
+
+/// Convert one glyph's stored SVG path into a `CompoundPath`.
+///
+/// Each `M` starts a subpath and takes its dark/clear flag from the glyph's
+/// `gerber_lp` string; `Z` closes and flushes a subpath. `Q` is promoted to a
+/// cubic with the standard 2/3 control-point rule.
+fn svgpath_to_compound_path(
+    glyph: Glyph
+    xscale: f64
+    yscale: f64
+) -> Result<CompoundPath, FontError> {
+    let cmds = split_path(glyph.d)?
+    let gerber: Vec<char> = glyph.gerber_lp.chars().collect()
+    let mut paths: Vec<Path> = #[]
+    let mut anchors: Vec<Anchor> = #[]
+    let mut current_clear = false
+    let mut gerber_index = 0
+
+    for cmd in cmds {
+        match cmd.c {
+            'M' => {
+                if anchors.len() > 0 {
+                    paths.push(Path::new(anchors, closed: false, clear: current_clear))
+                    anchors = #[]
+                }
+                if gerber_index >= gerber.len() {
+                    return Err(FontError::new(f"SVGPath::from_glyph: gerber_lp index out of range: index={gerber_index}, length={gerber.len()} for path '{glyph.char}'"))
+                }
+                let glp = gerber[gerber_index]
+                current_clear = match glp {
+                    'd' => false
+                    'c' => true
+                    _ => return Err(FontError::new(f"SVGPath::from_glyph: unsupported GerberLP '{glp}'"))
+                }
+                gerber_index += 1
+                anchors = push_points(cmd, anchors, xscale, yscale)
+            }
+            'L' => {
+                anchors = push_points(cmd, anchors, xscale, yscale)
+            }
+            'C' => {
+                let mut i = 0
+                while i + 6 <= cmd.p.len() {
+                    if anchors.len() == 0 {
+                        i += 6
+                        continue
+                    }
+                    let c1 = Vec2 { x: cmd.p[i] * xscale, y: cmd.p[i + 1] * yscale }
+                    let c2 = Vec2 { x: cmd.p[i + 2] * xscale, y: cmd.p[i + 3] * yscale }
+                    let end = Vec2 { x: cmd.p[i + 4] * xscale, y: cmd.p[i + 5] * yscale }
+                    let last = anchors.len() - 1
+                    let prev = anchors[last]
+                    anchors[last] = Anchor {
+                        position: prev.position
+                        handle_in: prev.handle_in
+                        handle_out: c1.sub(prev.position)
+                    }
+                    anchors.push(Anchor::new(end, c2.sub(end)))
+                    i += 6
+                }
+            }
+            'Q' => {
+                let mut i = 0
+                while i + 4 <= cmd.p.len() {
+                    if anchors.len() == 0 {
+                        i += 4
+                        continue
+                    }
+                    let ctrl = Vec2 { x: cmd.p[i] * xscale, y: cmd.p[i + 1] * yscale }
+                    let end = Vec2 { x: cmd.p[i + 2] * xscale, y: cmd.p[i + 3] * yscale }
+                    let last = anchors.len() - 1
+                    let prev = anchors[last]
+                    let start = prev.position
+                    let c1 = ctrl.sub(start).mul_scalar(2.0 / 3.0).add(start)
+                    let c2 = ctrl.sub(end).mul_scalar(2.0 / 3.0).add(end)
+                    anchors[last] = Anchor {
+                        position: start
+                        handle_in: prev.handle_in
+                        handle_out: c1.sub(start)
+                    }
+                    anchors.push(Anchor::new(end, c2.sub(end)))
+                    i += 4
+                }
+            }
+            'Z' => {
+                if anchors.len() > 0 {
+                    paths.push(Path::new(anchors, closed: true, clear: current_clear))
+                    anchors = #[]
+                }
+            }
+            _ => {
+                return Err(FontError::new(f"PathCmd::from_svg_cmd: unsupported SVG command '{cmd.c}'"))
+            }
+        }
+    }
+
+    if anchors.len() > 0 {
+        paths.push(Path::new(anchors, closed: false, clear: current_clear))
+    }
+    Ok(CompoundPath::new(paths))
+}
+
+/// Append every `(x, y)` pair of a command as a sharp anchor.
+fn push_points(
+    cmd: SvgCmd
+    mut anchors: Vec<Anchor>
+    xscale: f64
+    yscale: f64
+) -> Vec<Anchor> {
+    let mut i = 0
+    while i + 1 < cmd.p.len() {
+        anchors.push(Anchor::new(Vec2 {
+            x: cmd.p[i] * xscale
+            y: cmd.p[i + 1] * yscale
+        }))
+        i += 2
+    }
+    anchors
+}

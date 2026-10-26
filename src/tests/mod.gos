@@ -1,0 +1,58 @@
+//! Test modules. Imported from `lib.gos` under `#[cfg(test)]`.
+
+#[cfg(test)]
+use crate::tests::fmt_tests
+
+#[cfg(test)]
+use crate::tests::header_tests
+
+#[cfg(test)]
+use crate::tests::entity_context_tests
+
+#[cfg(test)]
+use crate::tests::entity_geometry_tests
+
+#[cfg(test)]
+use crate::tests::entity_kinematics_tests
+
+#[cfg(test)]
+use crate::tests::entity_presentation_tests
+
+#[cfg(test)]
+use crate::tests::entity_product_tests
+
+#[cfg(test)]
+use crate::tests::entity_tolerancing_tests
+
+#[cfg(test)]
+use crate::tests::entity_topology_tests
+
+#[cfg(test)]
+use crate::tests::entity_units_tests
+
+#[cfg(test)]
+use crate::tests::repository_tests
+
+#[cfg(test)]
+use crate::tests::tokenize_tests
+
+#[cfg(test)]
+use crate::tests::parse_tests
+
+#[cfg(test)]
+use crate::tests::fixture_tests
+
+#[cfg(test)]
+use crate::tests::cad_tests
+
+#[cfg(test)]
+use crate::tests::fuzz_tests
+
+#[cfg(test)]
+use crate::tests::parity_tests
+
+#[cfg(test)]
+use crate::tests::cli_tests
+
+#[cfg(test)]
+use crate::tests::refmath_tests

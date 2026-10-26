@@ -1,0 +1,112 @@
+//! 27-camera-tripod-adapter — a parametric Arca-Swiss compatible camera
+//! tripod mounting plate built from a complex extruded cross-section.
+
+use std::env
+use std::process
+
+use step
+
+fn arca_swiss_body(width: f64, length: f64, height: f64) -> step::Shape {
+    let hh = height / 2.0
+    let dh = 6.0 // dovetail height
+    let dx = dh // 45 degrees
+    let w_max = width / 2.0
+    let w_min = w_max - dx
+    let profile = #[
+        (-w_max, -hh)
+        (w_max, -hh)
+        (w_min, -hh + dh)
+        (w_min, hh)
+        (-w_min, hh)
+        (-w_max, -hh + dh)
+    ]
+    step::extrude(step::profile(profile), length)
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "width": step::opt_double(38.0, help: "Plate width at the dovetail base (mm)", min: Some(0.0), min_exclusive: true)
+        "length": step::opt_double(50.0, help: "Plate length (mm)", min: Some(0.0), min_exclusive: true)
+        "height": step::opt_double(10.0, help: "Total plate height (mm)", min: Some(0.0), min_exclusive: true)
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(step::with_translate(spec), "27-camera-tripod-adapter", "Generate a parametric Arca-Swiss camera tripod mounting plate.", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let width = args.double_or("width", 38.0)
+    let length = args.double_or("length", 50.0)
+    let height = args.double_or("height", 10.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    // Create the main Arca-Swiss plate body
+    let plate = arca_swiss_body(width, length, height)
+        .named("tripod-plate")
+        .colored(step::CYAN)
+        .turned_x(90.0)
+        .moved(y: length / 2.0)
+
+    // Add rubber grip pads on top
+    let pad_w = width * 0.2
+    let pad_l = length * 0.8
+    let pad_h = 1.0
+    let pad_color = step::rgb(0.1, 0.0, 0.2) // Deep purple
+    let left_pad = step::cuboid(pad_w, pad_l, pad_h)
+        .named("left-pad")
+        .colored(pad_color)
+        .moved(x: -width * 0.25 - pad_w / 2.0, y: -pad_l / 2.0, z: height / 2.0)
+    let right_pad = step::cuboid(pad_w, pad_l, pad_h)
+        .named("right-pad")
+        .colored(pad_color)
+        .moved(x: width * 0.25 - pad_w / 2.0, y: -pad_l / 2.0, z: height / 2.0)
+
+    // Add some text branding on top
+    let font = step::load_font("baloo")?
+    let design = step::design(name: "camera-tripod-adapter", documentation: args.documentation())
+        .add(plate)
+        .add(left_pad)
+        .add(right_pad)
+        .add_text_on_face(
+            plate
+            "ARCA-SWISS"
+            step::Face::Back // Original min_y face, points DOWN after rotate_x(90)
+            font
+            font_size: Some(3.5)
+            emboss_depth: Some(0.5)
+            offset_y: 0.0
+            color: step::ORANGE
+        )
+        .moved(x: tx, y: ty, z: tz)
+        .turned_y(180.0)
+        .turned_z(180.0)
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

@@ -1,0 +1,116 @@
+//! 17-living-hinge-sample — a slotted living hinge.
+
+use std::env
+use std::process
+
+use step
+
+fn living_hinge(
+    plate_length: f64
+    total_width: f64
+    thickness: f64
+    hinge_width: f64
+    slot_width: f64
+    slot_length: f64
+    num_rows: i64
+) -> step::Shape {
+    let total_length = 2.0 * plate_length + hinge_width
+    let outer = step::rect(total_length, total_width)
+    let mut holes = #[]
+    let row_spacing = hinge_width / (num_rows + 1) as f64
+    let mut i = 0
+    while i < num_rows {
+        let row_x = plate_length + (i + 1) as f64 * row_spacing
+        let is_offset = i % 2 == 1
+        let mut current_y = if is_offset { -slot_length / 2.0 } else { 0.0 }
+        let spacing_y = slot_length * 1.2
+        let padding = 1.0
+        while current_y < total_width + slot_length {
+            let y_start = if current_y < padding { padding } else { current_y }
+            let y_end = if current_y + slot_length > total_width - padding {
+                total_width - padding
+            } else {
+                current_y + slot_length
+            }
+            if y_end - y_start > 1.0 {
+                let sw = slot_width
+                let mut hole = #[
+                    (row_x - sw / 2.0, y_start)
+                    (row_x + sw / 2.0, y_start)
+                    (row_x + sw / 2.0, y_end)
+                    (row_x - sw / 2.0, y_end)
+                ]
+                let mut rev = #[]
+                let mut k = hole.len() as i64 - 1
+                while k >= 0 {
+                    rev.push(hole[k])
+                    k -= 1
+                }
+                hole = rev
+                holes.push(hole)
+            }
+            current_y = current_y + spacing_y
+        }
+        i += 1
+    }
+    step::extrude(step::profile(outer).add_all_holes(holes), thickness)
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "plateLength": step::opt_double(30.0, help: "Length of the solid plates on either side (mm)", min: Some(1.0))
+        "width": step::opt_double(50.0, help: "Total width of the hinge (mm)", min: Some(1.0))
+        "thickness": step::opt_double(2.0, help: "Material thickness (mm)", min: Some(0.1))
+        "hingeWidth": step::opt_double(20.0, help: "Width of the slotted hinge section (mm)", min: Some(1.0))
+        "slotWidth": step::opt_double(1.0, help: "Width of each slot (mm)", min: Some(0.1))
+        "slotLength": step::opt_double(10.0, help: "Length of each slot (mm)", min: Some(1.0))
+        "numRows": step::opt_double(7.0, help: "Number of rows of slots", min: Some(1.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(step::with_translate(spec), "17-living-hinge-sample", "Generate a living hinge sample STEP model.", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let plate_length = args.double_or("plateLength", 30.0)
+    let width = args.double_or("width", 50.0)
+    let thickness = args.double_or("thickness", 2.0)
+    let hinge_width = args.double_or("hingeWidth", 20.0)
+    let slot_width = args.double_or("slotWidth", 1.0)
+    let slot_length = args.double_or("slotLength", 10.0)
+    let num_rows = args.double_or("numRows", 7.0) as i64
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+    let hinge = living_hinge(plate_length, width, thickness, hinge_width, slot_width, slot_length, num_rows)
+        .named("living-hinge")
+        .colored(step::PURPLE)
+        .moved(tx, ty, tz)
+    let design = step::design(name: "living-hinge-sample", documentation: args.documentation()).add(hinge)
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

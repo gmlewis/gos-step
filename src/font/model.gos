@@ -1,0 +1,262 @@
+//! Font and glyph data model.
+//!
+//! This is a faithful port of the data-bearing subset of the Apache-2.0
+//! `gmlewis/fonts` package. A font file is `gzip(UTF-8 JSON)` with a
+//! top-level object such as:
+//!
+//! ```json
+//! {"id":"baloo","horiz_adv_x":298,"units_per_em":1000,"ascent":800,
+//!  "descent":-200,"glyphs":{"A":{...}}}
+//! ```
+//!
+//! Every glyph carries an absolute SVG path (`d`) using only the commands
+//! `M`, `L`, `C`, `Q`, and `Z`, a per-subpath dark/clear string
+//! (`gerber_lp`), its own advance, and a conservative bounding box.
+
+use std::math
+
+/// A 2D point or vector in font units.
+///
+/// This deliberately lives in the font module rather than reusing
+/// `crate::cad::geometry::Vec2`: the font engine is a self-contained port and
+/// must not depend on the CAD layer.
+pub struct Vec2 {
+    pub x: f64
+    pub y: f64
+}
+
+impl Vec2 {
+    /// Construct a point.
+    pub fn new(x: f64, y: f64) -> Vec2 {
+        Vec2 { x: x, y: y }
+    }
+
+    /// The origin.
+    pub fn zero() -> Vec2 {
+        Vec2 { x: 0.0, y: 0.0 }
+    }
+
+    /// Component-wise addition.
+    pub fn add(self, other: Vec2) -> Vec2 {
+        Vec2 { x: self.x + other.x, y: self.y + other.y }
+    }
+
+    /// Component-wise subtraction.
+    pub fn sub(self, other: Vec2) -> Vec2 {
+        Vec2 { x: self.x - other.x, y: self.y - other.y }
+    }
+
+    /// Multiplication by a scalar.
+    pub fn mul_scalar(self, scalar: f64) -> Vec2 {
+        Vec2 { x: self.x * scalar, y: self.y * scalar }
+    }
+
+    /// Squared Euclidean distance.
+    pub fn distance_squared(self, other: Vec2) -> f64 {
+        let dx = self.x - other.x
+        let dy = self.y - other.y
+        dx * dx + dy * dy
+    }
+
+    /// True when both components are exactly zero.
+    pub fn is_zero(self) -> bool {
+        self.x == 0.0 && self.y == 0.0
+    }
+
+    /// Convert to a plain `(x, y)` tuple.
+    pub fn to_tuple(self) -> (f64, f64) {
+        (self.x, self.y)
+    }
+}
+
+impl Display for Vec2 {
+    fn fmt(&self) -> String {
+        f"({self.x},{self.y})"
+    }
+}
+
+/// An axis-aligned minimum bounding box.
+pub struct BBox {
+    pub min: Vec2
+    pub max: Vec2
+}
+
+impl BBox {
+    /// Construct a box from two corner points.
+    pub fn new(min: Vec2, max: Vec2) -> BBox {
+        BBox { min: min, max: max }
+    }
+
+    /// A box with `min = (+inf, +inf)` and `max = (-inf, -inf)`, ready to be
+    /// expanded by points. This mirrors `BoundingBox::max_reversed`.
+    pub fn max_reversed() -> BBox {
+        BBox {
+            min: Vec2 { x: math::INF, y: math::INF }
+            max: Vec2 { x: math::NEG_INF, y: math::NEG_INF }
+        }
+    }
+
+    /// Width of the box along X.
+    pub fn width(self) -> f64 {
+        self.max.x - self.min.x
+    }
+
+    /// Height of the box along Y.
+    pub fn height(self) -> f64 {
+        self.max.y - self.min.y
+    }
+
+    /// Signed area (`width * height`).
+    pub fn area(self) -> f64 {
+        self.width() * self.height()
+    }
+
+    /// The midpoint of the box.
+    pub fn center(self) -> Vec2 {
+        Vec2 {
+            x: (self.min.x + self.max.x) * 0.5
+            y: (self.min.y + self.max.y) * 0.5
+        }
+    }
+
+    /// True when `point` lies inside or on the box.
+    pub fn contains_point(self, point: Vec2) -> bool {
+        point.x >= self.min.x && point.x <= self.max.x && point.y >= self.min.y && point.y <= self.max.y
+    }
+
+    /// Grow the box to include `point`.
+    pub fn expand_point(&mut self, point: Vec2) {
+        if point.x < self.min.x {
+            self.min.x = point.x
+        }
+        if point.y < self.min.y {
+            self.min.y = point.y
+        }
+        if point.x > self.max.x {
+            self.max.x = point.x
+        }
+        if point.y > self.max.y {
+            self.max.y = point.y
+        }
+    }
+
+    /// Grow the box to include another box.
+    pub fn expand_box(&mut self, other: BBox) {
+        self.expand_point(other.min)
+        self.expand_point(other.max)
+    }
+
+    /// The minimum box containing every point. An empty slice yields the
+    /// reversed box, matching the reference implementation.
+    pub fn from_points(points: Vec<Vec2>) -> BBox {
+        if points.len() == 0 {
+            return BBox::max_reversed()
+        }
+        let mut box = BBox::new(points[0], points[0])
+        let mut i = 1
+        while i < points.len() {
+            box.expand_point(points[i])
+            i += 1
+        }
+        box
+    }
+
+    /// True when the box was never expanded (or is numerically empty).
+    pub fn is_empty(self) -> bool {
+        self.min.x >= self.max.x || self.min.y >= self.max.y
+    }
+
+    /// True when either corner is infinite (the never-expanded state).
+    pub fn is_inf(self) -> bool {
+        self.min.x == math::INF || self.min.x == math::NEG_INF ||
+            self.min.y == math::INF || self.min.y == math::NEG_INF ||
+            self.max.x == math::INF || self.max.x == math::NEG_INF ||
+            self.max.y == math::INF || self.max.y == math::NEG_INF
+    }
+}
+
+/// An error raised while parsing, translating, or drawing font paths.
+pub struct FontError {
+    pub message: String
+}
+
+impl FontError {
+    /// Construct an error from a message.
+    pub fn new(message: String) -> FontError {
+        FontError { message: message }
+    }
+}
+
+impl Display for FontError {
+    fn fmt(&self) -> String {
+        self.message
+    }
+}
+
+/// A single glyph: a stored SVG path plus its advance and bounding box.
+pub struct Glyph {
+    /// This glyph's text. For a "super-glyph" produced by `Font::gen_path`
+    /// this is the concatenation of the source glyph characters.
+    pub char: String
+    /// Font units to advance after drawing this glyph. Zero means "fall back
+    /// to the font's `horiz_adv_x`".
+    pub horiz_adv_x: f64
+    /// One `d` (dark) or `c` (clear) per subpath in `d`, in order.
+    pub gerber_lp: String
+    /// The absolute SVG path (`M`, `L`, `C`, `Q`, `Z` only).
+    pub d: String
+    /// Conservative bounding box minimum X.
+    pub xmin: f64
+    /// Conservative bounding box minimum Y.
+    pub ymin: f64
+    /// Conservative bounding box maximum X.
+    pub xmax: f64
+    /// Conservative bounding box maximum Y.
+    pub ymax: f64
+}
+
+impl Glyph {
+    /// The stored bounding box.
+    pub fn bbox(self) -> BBox {
+        BBox::new(Vec2::new(self.xmin, self.ymin), Vec2::new(self.xmax, self.ymax))
+    }
+}
+
+/// An entire font.
+pub struct Font {
+    /// Short font identifier, e.g. `"baloo"`.
+    pub id: String
+    /// Default advance for glyphs whose own advance is zero.
+    pub horiz_adv_x: f64
+    /// Font design units per em square.
+    pub units_per_em: f64
+    /// Ascent in font units.
+    pub ascent: f64
+    /// Descent in font units (normally negative).
+    pub descent: f64
+    /// Glyphs keyed by their character string.
+    pub glyphs: Map<String, Glyph>
+}
+
+impl Font {
+    /// Number of glyphs in the font.
+    pub fn glyph_count(self) -> i64 {
+        self.glyphs.len() as i64
+    }
+
+    /// Look up a glyph by character.
+    pub fn glyph(self, text: String) -> Option<Glyph> {
+        self.glyphs.get(text)
+    }
+}
+
+/// Decode a font from its plain UTF-8 JSON text.
+///
+/// The error is flattened to a message because Gossamer's typed decoder has
+/// its own error type; the loader wraps this in a `LoaderError`.
+pub fn decode_font(text: String) -> Result<Font, String> {
+    match from_json::<Font>(text) {
+        Ok(font) => Ok(font)
+        Err(err) => Err(f"{err}")
+    }
+}

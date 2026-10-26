@@ -1,0 +1,22 @@
+//! Font loading, SVG-path parsing, layout, and flattening.
+//!
+//! This module ports the subset of the Apache-2.0 `gmlewis/fonts`
+//! package (plus `gmlewis/fonts/draw`) that the CAD text builder needs:
+//!
+//! * [`model`](crate::font::model) — `Font`, `Glyph`, 2D points, bounding
+//!   boxes, and JSON decoding.
+//! * [`svg`](crate::font::svg) — the absolute `M L C Q Z` path parser,
+//!   `translate_path`, and `svg_num` formatting.
+//! * [`layout`](crate::font::layout) — `Font::gen_path` and every `Alignment`.
+//! * [`draw`](crate::font::draw) — `Anchor`, `Path`, `CompoundPath`,
+//!   `Graphic`, and `to_graphic`.
+//! * [`flatten`](crate::font::flatten) — true Bézier bounding boxes, polygon
+//!   sampling, `to_profiles_tuples`, and `fit_to` / `scale_to_fit`.
+//! * [`load`](crate::font::load) — gzip + JSON font loading with the
+//!   reference search order.
+//!
+//! Only geometry is represented: fills and strokes are deliberately omitted
+//! because the CAD layer consumes subpaths and their `clear` flags directly.
+
+#[cfg(test)]
+use crate::tests::font_tests

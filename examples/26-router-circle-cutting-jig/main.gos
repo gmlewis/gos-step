@@ -1,0 +1,138 @@
+//! 26-router-circle-cutting-jig — a circle-cutting jig for a router.
+//!
+//! Usage: ./run-example.sh 26 --armLength 250 > jig.step
+
+use std::env
+use std::math
+use std::process
+
+use step
+use step::Face::{Top}
+
+fn reverse_pts(pts: Vec<step::V2>) -> Vec<step::V2> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+fn concat_pts(a: Vec<step::V2>, b: Vec<step::V2>) -> Vec<step::V2> {
+    let mut out = a
+    out.extend(b)
+    out
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "baseDiameter": step::opt_double(150.0, help: "Diameter of the router base (mm)", min: Some(50.0))
+        "armLength": step::opt_double(300.0, help: "Total length from bit center to arm end (mm)", min: Some(100.0))
+        "armWidth": step::opt_double(40.0, help: "Width of the extension arm (mm)", min: Some(20.0))
+        "bitHoleDiameter": step::opt_double(30.0, help: "Diameter of the central bit hole (mm)", min: Some(5.0))
+        "mountHoleSpacing": step::opt_double(80.0, help: "Center-to-center spacing of router mounting holes (mm)", min: Some(20.0))
+        "mountHoleDiameter": step::opt_double(6.5, help: "Diameter of the mounting holes (mm)", min: Some(1.0))
+        "pivotSlotWidth": step::opt_double(6.5, help: "Width of the pivot adjustment slot (mm)", min: Some(1.0))
+        "thickness": step::opt_double(8.0, help: "Thickness of the jig plate (mm)", min: Some(3.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "26-router-circle-cutting-jig"
+        "Generate a router circle-cutting jig."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+
+    let base_dia = args.double_or("baseDiameter", 150.0)
+    let arm_l = args.double_or("armLength", 300.0)
+    let arm_w = args.double_or("armWidth", 40.0)
+    let bit_dia = args.double_or("bitHoleDiameter", 30.0)
+    let mount_s = args.double_or("mountHoleSpacing", 80.0)
+    let mount_dia = args.double_or("mountHoleDiameter", 6.5)
+    let slot_w = args.double_or("pivotSlotWidth", 6.5)
+    let thick = args.double_or("thickness", 8.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            return Ok(())
+        }
+    }
+
+    // 1. Build the main profile.
+    let base_r = base_dia / 2.0
+    let half_arm_w = arm_w / 2.0
+    let base_angle = math::asin(half_arm_w / base_r)
+    let outer_arc = step::arc(base_dia, base_angle, 2.0 * math::PI - base_angle)
+    let arm_end_pts = #[(arm_l, -half_arm_w), (arm_l, half_arm_w)]
+    let jig_poly = concat_pts(outer_arc, arm_end_pts)
+    let mut jig_profile = step::profile(jig_poly)
+
+    // 2. Add holes.
+    let bit_hole = reverse_pts(step::circle(bit_dia))
+    jig_profile = jig_profile.add_hole(bit_hole)
+    let mount_locs = #[(0.0, mount_s / 2.0), (0.0, -mount_s / 2.0)]
+    let mount_hole_poly = step::circle(mount_dia)
+    jig_profile = jig_profile.add_holes_at(mount_locs, mount_hole_poly)
+    let slot_start = base_r + 10.0
+    let slot_end = arm_l - 10.0
+    if slot_end > slot_start {
+        let slot_poly = reverse_pts(#[
+            (slot_start, -slot_w / 2.0)
+            (slot_end, -slot_w / 2.0)
+            (slot_end, slot_w / 2.0)
+            (slot_start, slot_w / 2.0)
+        ])
+        jig_profile = jig_profile.add_hole(slot_poly)
+    }
+
+    // 3. Create the solid.
+    let jig = step::extrude(jig_profile, thick)
+        .named("router-jig")
+        .colored(step::ORANGE)
+
+    // 4. Add some labels.
+    let font = step::load_font("baloo")?
+    let design = step::design(name: "router-circle-jig", documentation: args.documentation())
+        .add(jig)
+        .add_text_on_face(
+            jig
+            "ROUTER JIG"
+            Top
+            font
+            font_size: Some(arm_w * 0.3)
+            offset_x: base_r
+            offset_y: arm_w * 0.3
+            color: step::WHITE
+        )
+        .moved(tx, ty, tz)
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

@@ -1,0 +1,215 @@
+//! 18-vented-electronics-enclosure — a vented box generator: walls, lid, screw
+//! bosses, and parametric vent patterns.
+//!
+//! Usage: gos run examples/18-vented-electronics-enclosure/main.gos --width 80 --length 120 --height 40 > enclosure.step
+
+use std::env
+use std::process
+
+use step
+
+fn vented_enclosure(
+    width: f64
+    length: f64
+    height: f64
+    wall_thickness: f64
+    fillet_radius: f64
+    boss_diameter: f64
+    boss_hole_diameter: f64
+    lid_thickness: f64
+    vent_slot_width: f64
+    vent_slot_spacing: f64
+) -> Vec<step::SceneNode> {
+    let outer = step::rounded_rect(width, length, fillet_radius)
+    let inner_r = if fillet_radius > wall_thickness {
+        fillet_radius - wall_thickness
+    } else {
+        0.0
+    }
+    let mut inner = #[]
+    for p in step::rounded_rect(width - 2.0 * wall_thickness, length - 2.0 * wall_thickness, inner_r) {
+        inner.push((p.0 + wall_thickness, p.1 + wall_thickness))
+    }
+    let inner = inner.rev()
+
+    // 1. Body Bottom
+    let bottom = step::extrude(step::profile(outer), wall_thickness)
+        .named("body-bottom")
+        .colored(step::BLUE)
+
+    // 2. Body Walls
+    let walls = step::extrude(step::profile(outer).add_hole(inner), height - wall_thickness)
+        .named("body-walls")
+        .colored(step::BLUE)
+        .moved(0.0, 0.0, wall_thickness)
+    let mut nodes = #[bottom, walls]
+
+    // 3. Screw Bosses
+    let boss_h = height - wall_thickness
+    let boss_offset = wall_thickness + boss_diameter / 2.0
+    let boss_locs = #[
+        (boss_offset, boss_offset)
+        (width - boss_offset, boss_offset)
+        (width - boss_offset, length - boss_offset)
+        (boss_offset, length - boss_offset)
+    ]
+    for i in 0..boss_locs.len() {
+        let bx, by = boss_locs[i]
+        let boss = step::tube(boss_diameter, boss_hole_diameter, boss_h)
+            .named(f"boss-{i}")
+            .colored(step::CYAN)
+            .moved(bx, by, wall_thickness)
+        nodes.push(boss)
+    }
+
+    // 4. Lid with Vents
+    let vent_w = vent_slot_width
+    let vent_s = vent_slot_spacing
+    let mut lid_holes = #[]
+
+    // Add some vent slots in the middle
+    let safe_margin = wall_thickness + boss_diameter + 2.0
+    let vent_area_w = width - 2.0 * safe_margin
+    let vent_area_l = length - 2.0 * safe_margin
+    if vent_area_w > vent_w && vent_area_l > vent_w {
+        let num_vents = (vent_area_w / vent_s) as i64
+        for i in 0..num_vents {
+            let vx = safe_margin + i as f64 * vent_s
+            let hole = #[
+                (vx - vent_w / 2.0, safe_margin)
+                (vx + vent_w / 2.0, safe_margin)
+                (vx + vent_w / 2.0, safe_margin + vent_area_l)
+                (vx - vent_w / 2.0, safe_margin + vent_area_l)
+            ].rev()
+            lid_holes.push(hole)
+        }
+    }
+
+    // Add screw holes to lid
+    for loc in boss_locs {
+        let bx, by = loc
+        let mut hole = #[]
+        for p in step::circle(boss_hole_diameter) {
+            hole.push((p.0 + bx, p.1 + by))
+        }
+        lid_holes.push(hole.rev())
+    }
+    let lid = step::extrude(step::profile(outer).add_all_holes(lid_holes), lid_thickness)
+        .named("lid")
+        .colored(step::ORANGE)
+        .moved(0.0, 0.0, height + 10.0) // Exploded view
+    nodes.push(lid)
+    nodes
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "width": step::opt_double(80.0, help: "Outer width of the box (mm)", min: Some(20.0))
+        "length": step::opt_double(120.0, help: "Outer length of the box (mm)", min: Some(20.0))
+        "height": step::opt_double(40.0, help: "Total height of the box body (mm)", min: Some(5.0))
+        "wallThickness": step::opt_double(2.5, help: "Thickness of the walls (mm)", min: Some(1.0))
+        "filletRadius": step::opt_double(5.0, help: "Corner fillet radius (mm)", min: Some(0.0))
+        "bossOD": step::opt_double(8.0, help: "Screw boss outer diameter (mm)", min: Some(1.0))
+        "bossID": step::opt_double(3.2, help: "Screw boss inner (hole) diameter (mm)", min: Some(0.5))
+        "lidThickness": step::opt_double(3.0, help: "Thickness of the lid (mm)", min: Some(1.0))
+        "ventWidth": step::opt_double(2.0, help: "Width of vent slots (mm)", min: Some(0.5))
+        "ventSpacing": step::opt_double(4.0, help: "Spacing between vent slots (mm)", min: Some(1.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "18-vented-electronics-enclosure"
+        "Generate a vented electronics enclosure STEP model."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let width = match args.double("width") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let length = match args.double("length") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let height = match args.double("height") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let wall_thickness = match args.double("wallThickness") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let fillet_radius = match args.double("filletRadius") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let boss_od = match args.double("bossOD") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let boss_id = match args.double("bossID") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let lid_thickness = match args.double("lidThickness") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let vent_width = match args.double("ventWidth") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let vent_spacing = match args.double("ventSpacing") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+    let nodes = vented_enclosure(
+        width
+        length
+        height
+        wall_thickness
+        fillet_radius
+        boss_od
+        boss_id
+        lid_thickness
+        vent_width
+        vent_spacing
+    )
+    let mut design = step::design(name: "vented-enclosure", documentation: args.documentation())
+    for node in nodes {
+        design = design.add(node.moved(tx - width / 2.0, ty - length / 2.0, tz))
+    }
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

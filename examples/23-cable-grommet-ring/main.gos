@@ -1,0 +1,161 @@
+//! 23-cable-grommet-ring — a parametric grommet for cable pass-throughs.
+//!
+//! Usage: ./run-example.sh 23 --innerDiameter 8 --panelThickness 2 > grommet.step
+
+use std::env
+use std::math
+use std::process
+
+use step
+
+fn reverse_pts(pts: Vec<step::V2>) -> Vec<step::V2> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+fn concat_pts(a: Vec<step::V2>, b: Vec<step::V2>) -> Vec<step::V2> {
+    let mut out = a
+    out.extend(b)
+    out
+}
+
+fn cable_grommet(
+    id: f64
+    pd: f64
+    ld: f64
+    pt: f64
+    lt: f64
+    split: bool
+) -> Vec<step::SceneNode> {
+    if split {
+        // Two halves.
+        let mut nodes = #[]
+        let half_spacing = 5.0
+        for i in 0..2 {
+            let ty = if i == 0 { half_spacing } else { -half_spacing }
+            let name_suffix = if i == 0 { "a" } else { "b" }
+            let rotation = if i == 0 { 0.0 } else { 180.0 }
+
+            let start_angle = 0.0
+            let end_angle = math::PI
+            let outer_arc = step::arc(ld, start_angle, end_angle)
+            let inner_arc = reverse_pts(step::arc(id, start_angle, end_angle))
+            let half_lip_profile = concat_pts(outer_arc, inner_arc)
+            let outer_groove_arc = step::arc(pd, start_angle, end_angle)
+            let half_groove_profile = concat_pts(outer_groove_arc, inner_arc)
+            let b_lip = step::extrude(step::profile(half_lip_profile), lt)
+                .named(f"bottom-lip-{name_suffix}")
+                .colored(step::BLUE)
+                .turned_z(rotation)
+                .moved(0.0, ty, 0.0)
+            let grv = step::extrude(step::profile(half_groove_profile), pt)
+                .named(f"groove-{name_suffix}")
+                .colored(step::CYAN)
+                .turned_z(rotation)
+                .moved(0.0, ty, lt)
+            let t_lip = step::extrude(step::profile(half_lip_profile), lt)
+                .named(f"top-lip-{name_suffix}")
+                .colored(step::BLUE)
+                .turned_z(rotation)
+                .moved(0.0, ty, lt + pt)
+            nodes.push(b_lip)
+            nodes.push(grv)
+            nodes.push(t_lip)
+        }
+        nodes
+    } else {
+        // Single part.
+        let bottom_lip = step::tube(ld, id, lt)
+            .named("bottom-lip")
+            .colored(step::BLUE)
+        let groove = step::tube(pd, id, pt)
+            .named("groove")
+            .colored(step::CYAN)
+            .moved(0.0, 0.0, lt)
+        let top_lip = step::tube(ld, id, lt)
+            .named("top-lip")
+            .colored(step::BLUE)
+            .moved(0.0, 0.0, lt + pt)
+        #[bottom_lip, groove, top_lip]
+    }
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "innerDiameter": step::opt_double(10.0, help: "Inner hole diameter for the cable (mm)", min: Some(1.0))
+        "panelDiameter": step::opt_double(16.0, help: "Diameter of the hole in the panel (mm)", min: Some(2.0))
+        "lipDiameter": step::opt_double(22.0, help: "Outer diameter of the grommet lips (mm)", min: Some(3.0))
+        "panelThickness": step::opt_double(3.0, help: "Thickness of the panel it fits into (mm)", min: Some(0.5))
+        "lipThickness": step::opt_double(2.0, help: "Thickness of the retention lips (mm)", min: Some(0.5))
+        "split": step::flag(help: "Split the grommet into two halves")
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "23-cable-grommet-ring"
+        "Generate a parametric cable grommet."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+
+    let id = args.double_or("innerDiameter", 10.0)
+    let pd = args.double_or("panelDiameter", 16.0)
+    let ld = args.double_or("lipDiameter", 22.0)
+    let pt = args.double_or("panelThickness", 3.0)
+    let lt = args.double_or("lipThickness", 2.0)
+    let split = args.flag("split")
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            return Ok(())
+        }
+    }
+
+    if id >= pd {
+        eprintln("error: innerDiameter must be less than panelDiameter")
+        return Ok(())
+    }
+    if pd >= ld {
+        eprintln("error: panelDiameter must be less than lipDiameter")
+        return Ok(())
+    }
+
+    let nodes = cable_grommet(id, pd, ld, pt, lt, split)
+    let mut design = step::design(name: "cable-grommet", documentation: args.documentation())
+    for node in nodes {
+        design = design.add(node.moved(tx, ty, tz))
+    }
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

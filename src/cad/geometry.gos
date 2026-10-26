@@ -1,0 +1,241 @@
+//! Small vector, polygon, and rotation helpers shared by the CAD layer.
+//!
+//! Operation order is preserved exactly: no `mul_add`, no reassociation.
+
+use std::math
+
+use crate::cad::refmath
+
+use crate::cad::refmath
+
+/// A 2D point.
+pub type Vec2 = (f64, f64)
+
+/// A 3D point.
+pub type Vec3 = (f64, f64, f64)
+
+/// Signed area of a 2D polygon (positive for counter-clockwise).
+pub fn polygon_area_2d(pts: Vec<Vec2>) -> f64 {
+    let n = pts.len()
+    if n < 3 {
+        return 0.0
+    }
+    let mut area = 0.0
+    let mut i = 0
+    while i < n {
+        let j = (i + 1) % n
+        area = area + (pts[i].0 * pts[j].1 - pts[j].0 * pts[i].1)
+        i += 1
+    }
+    area / 2.0
+}
+
+/// Return the polygon wound counter-clockwise.
+pub fn force_ccw(pts: Vec<Vec2>) -> Vec<Vec2> {
+    if polygon_area_2d(pts) < 0.0 {
+        let mut out = #[]
+        let mut i = pts.len() as i64 - 1
+        while i >= 0 {
+            out.push(pts[i])
+            i -= 1
+        }
+        out
+    } else {
+        pts
+    }
+}
+
+/// Return the polygon wound clockwise.
+pub fn force_cw(pts: Vec<Vec2>) -> Vec<Vec2> {
+    if polygon_area_2d(pts) > 0.0 {
+        let mut out = #[]
+        let mut i = pts.len() as i64 - 1
+        while i >= 0 {
+            out.push(pts[i])
+            i -= 1
+        }
+        out
+    } else {
+        pts
+    }
+}
+
+/// Even-odd point-in-polygon test.
+pub fn is_point_in_polygon(p: Vec2, poly: Vec<Vec2>) -> bool {
+    let n = poly.len()
+    if n < 3 {
+        return false
+    }
+    let mut inside = false
+    let px, py = p
+    let mut i = 0
+    while i < n {
+        let j = (i + 1) % n
+        let xi, yi = poly[i]
+        let xj, yj = poly[j]
+        let intersect = (yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi
+        if intersect {
+            inside = !inside
+        }
+        i += 1
+    }
+    inside
+}
+
+/// Area vector of a 3D cycle.
+pub fn cycle_area_3d(pts: Vec<Vec3>, cycle: Vec<i64>) -> Vec3 {
+    let n = cycle.len()
+    if n < 3 {
+        return (0.0, 0.0, 0.0)
+    }
+    let mut ax = 0.0
+    let mut ay = 0.0
+    let mut az = 0.0
+    let mut i = 0
+    while i < n {
+        let j = (i + 1) % n
+        let x1, y1, z1 = pts[cycle[i]]
+        let x2, y2, z2 = pts[cycle[j]]
+        ax = ax + (y1 * z2 - z1 * y2)
+        ay = ay + (z1 * x2 - x1 * z2)
+        az = az + (x1 * y2 - y1 * x2)
+        i += 1
+    }
+    (ax / 2.0, ay / 2.0, az / 2.0)
+}
+
+pub fn v_sub(a: Vec3, b: Vec3) -> Vec3 {
+    let ax, ay, az = a
+    let bx, by, bz = b
+    (ax - bx, ay - by, az - bz)
+}
+
+pub fn v_add(a: Vec3, b: Vec3) -> Vec3 {
+    let ax, ay, az = a
+    let bx, by, bz = b
+    (ax + bx, ay + by, az + bz)
+}
+
+pub fn v_scale(a: Vec3, s: f64) -> Vec3 {
+    let x, y, z = a
+    (x * s, y * s, z * s)
+}
+
+pub fn v_cross(a: Vec3, b: Vec3) -> Vec3 {
+    let ax, ay, az = a
+    let bx, by, bz = b
+    (ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
+}
+
+pub fn v_dot(a: Vec3, b: Vec3) -> f64 {
+    let ax, ay, az = a
+    let bx, by, bz = b
+    ax * bx + ay * by + az * bz
+}
+
+pub fn v_len(a: Vec3) -> f64 {
+    let x, y, z = a
+    math::sqrt(x * x + y * y + z * z)
+}
+
+/// Normalize, returning `(1,0,0)` for a zero vector (reference behavior).
+pub fn v_norm(a: Vec3) -> Vec3 {
+    let l = v_len(a)
+    if l == 0.0 {
+        (1.0, 0.0, 0.0)
+    } else {
+        let x, y, z = a
+        (x / l, y / l, z / l)
+    }
+}
+
+pub fn reverse_cycle(verts: Vec<i64>) -> Vec<i64> {
+    let mut out = #[]
+    let mut i = verts.len() as i64 - 1
+    while i >= 0 {
+        out.push(verts[i])
+        i -= 1
+    }
+    out
+}
+
+/// A 3×3 matrix.
+pub struct Matrix3x3 {
+    pub m00: f64
+    pub m01: f64
+    pub m02: f64
+    pub m10: f64
+    pub m11: f64
+    pub m12: f64
+    pub m20: f64
+    pub m21: f64
+    pub m22: f64
+}
+
+/// Rotation matrix for the `Rz * Ry * Rx` order, angles in degrees.
+pub fn rotation_matrix(rx: f64, ry: f64, rz: f64) -> Matrix3x3 {
+    let rad_x = rx * math::PI / 180.0
+    let rad_y = ry * math::PI / 180.0
+    let rad_z = rz * math::PI / 180.0
+    let sx = math::sin(rad_x)
+    let cx = math::cos(rad_x)
+    let sy = math::sin(rad_y)
+    let cy = math::cos(rad_y)
+    let sz = math::sin(rad_z)
+    let cz = math::cos(rad_z)
+
+    // Combined matrix Rz * Ry * Rx.
+    Matrix3x3 {
+        m00: cy * cz
+        m01: sx * sy * cz - cx * sz
+        m02: cx * sy * cz + sx * sz
+        m10: cy * sz
+        m11: sx * sy * sz + cx * cz
+        m12: cx * sy * sz - sx * cz
+        m20: -sy
+        m21: sx * cy
+        m22: cx * cy
+    }
+}
+
+pub fn apply_matrix(m: Matrix3x3, p: Vec3) -> Vec3 {
+    let x, y, z = p
+    (
+        m.m00 * x + m.m01 * y + m.m02 * z
+        m.m10 * x + m.m11 * y + m.m12 * z
+        m.m20 * x + m.m21 * y + m.m22 * z
+    )
+}
+
+pub fn multiply_matrices(a: Matrix3x3, b: Matrix3x3) -> Matrix3x3 {
+    Matrix3x3 {
+        m00: a.m00 * b.m00 + a.m01 * b.m10 + a.m02 * b.m20
+        m01: a.m00 * b.m01 + a.m01 * b.m11 + a.m02 * b.m21
+        m02: a.m00 * b.m02 + a.m01 * b.m12 + a.m02 * b.m22
+        m10: a.m10 * b.m00 + a.m11 * b.m10 + a.m12 * b.m20
+        m11: a.m10 * b.m01 + a.m11 * b.m11 + a.m12 * b.m21
+        m12: a.m10 * b.m02 + a.m11 * b.m12 + a.m12 * b.m22
+        m20: a.m20 * b.m00 + a.m21 * b.m10 + a.m22 * b.m20
+        m21: a.m20 * b.m01 + a.m21 * b.m11 + a.m22 * b.m21
+        m22: a.m20 * b.m02 + a.m21 * b.m12 + a.m22 * b.m22
+    }
+}
+
+pub fn matrix_to_euler(m: Matrix3x3) -> Vec3 {
+    let ry = -refmath::asin(m.m20)
+    if math::abs(math::cos(ry)) > 0.0001 {
+        let rx = refmath::atan2(m.m21, m.m22)
+        let rz = refmath::atan2(m.m10, m.m00)
+        (rx * 180.0 / math::PI, ry * 180.0 / math::PI, rz * 180.0 / math::PI)
+    } else {
+        // Gimbal lock.
+        let rx = 0.0
+        let rz = refmath::atan2(-m.m01, m.m11)
+        (rx, ry * 180.0 / math::PI, rz * 180.0 / math::PI)
+    }
+}
+
+pub fn rotate_point(p: Vec3, rx: f64, ry: f64, rz: f64) -> Vec3 {
+    let m = rotation_matrix(rx, ry, rz)
+    apply_matrix(m, p)
+}

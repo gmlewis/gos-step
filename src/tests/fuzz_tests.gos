@@ -1,0 +1,288 @@
+//! Deterministic fuzz smoke tests.
+//!
+//! Invariants: parsing never aborts or hangs; when parsing succeeds,
+//! parse → serialize → parse is stable.
+
+use crate::parse::entry::{parse_repository_from_string, parse_repository_from_string_result}
+use crate::parse::tokenize::tokenize_step_data_section
+
+/// Park–Miller minimal-standard RNG.
+fn pm_next(state: i64) -> i64 {
+    let m = 2_147_483_647
+    let a = 48_271
+    let next = (state * a) % m
+    if next == 0 { 1 } else { next }
+}
+
+fn rand_range(state: i64, hi_exclusive: i64) -> (i64, i64) {
+    let s2 = pm_next(state)
+    if hi_exclusive <= 1 {
+        (0, s2)
+    } else {
+        (s2 % hi_exclusive, s2)
+    }
+}
+
+fn rand_bool(state: i64, numerator: i64, denom: i64) -> (bool, i64) {
+    let v, s2 = rand_range(state, denom)
+    (v < numerator, s2)
+}
+
+fn rand_upper_name(state: i64) -> (String, i64) {
+    let mut s = state
+    let len0, s1 = rand_range(s, 10)
+    s = s1
+    let len = 3 + len0
+    let mut out = ""
+    let mut i = 0
+    while i < len {
+        let choice, s2 = rand_range(s, 28)
+        s = s2
+        if choice < 26 {
+            out += f"{char::from_u32(65 + choice as u32).unwrap_or('A')}"
+        } else {
+            out += "_"
+        }
+        i += 1
+    }
+    (out, s)
+}
+
+fn rand_digits(state: i64, min_len: i64, max_len: i64) -> (String, i64) {
+    let mut s = state
+    let span = if max_len <= min_len { 1 } else { max_len - min_len + 1 }
+    let d0, s1 = rand_range(s, span)
+    s = s1
+    let len = min_len + d0
+    let mut out = ""
+    let mut i = 0
+    while i < len {
+        let c, s2 = rand_range(s, 10)
+        s = s2
+        let digit = if i == 0 && len > 1 {
+            if c == 0 { 1 } else { c }
+        } else {
+            c
+        }
+        out += f"{char::from_u32(48 + digit as u32).unwrap_or('0')}"
+        i += 1
+    }
+    (out, s)
+}
+
+fn rand_step_string(state: i64) -> (String, i64) {
+    let mut s = state
+    let len0, s1 = rand_range(s, 30)
+    s = s1
+    let len = len0
+    let mut out = "'"
+    let mut i = 0
+    while i < len {
+        let choice, s2 = rand_range(s, 40)
+        s = s2
+        if choice < 26 {
+            out += f"{char::from_u32(97 + choice as u32).unwrap_or('a')}"
+        } else if choice < 30 {
+            out += " "
+        } else if choice < 33 {
+            if choice == 30 {
+                out += "ENDSEC;"
+            } else if choice == 31 {
+                out += "DATA;"
+            } else {
+                out += "/*"
+            }
+        } else if choice == 33 {
+            out += "''"
+        } else {
+            out += "-"
+        }
+        i += 1
+    }
+    out += "'"
+    (out, s)
+}
+
+fn rand_comment(state: i64) -> (String, i64) {
+    let mut s = state
+    let len0, s1 = rand_range(s, 25)
+    s = s1
+    let len = 3 + len0
+    let mut out = "/*"
+    let mut i = 0
+    while i < len {
+        let choice, s2 = rand_range(s, 20)
+        s = s2
+        if choice < 10 {
+            out += f"{char::from_u32(65 + choice as u32).unwrap_or('A')}"
+        } else if choice < 13 {
+            out += " "
+        } else if choice == 13 {
+            out += "ENDSEC;"
+        } else if choice == 14 {
+            out += "DATA;"
+        } else if choice == 15 {
+            out += ";"
+        } else {
+            out += "_"
+        }
+        i += 1
+    }
+    out += "*/"
+    (out, s)
+}
+
+fn rand_value(state: i64, depth: i64) -> (String, i64) {
+    let mut s = state
+    let choice, s1 = rand_range(s, 8)
+    s = s1
+    if choice == 0 {
+        ("$", s)
+    } else if choice == 1 {
+        rand_digits(s, 1, 6)
+    } else if choice == 2 {
+        let d, s2 = rand_digits(s, 1, 5)
+        ("#" + d, s2)
+    } else if choice == 3 {
+        rand_step_string(s)
+    } else if choice == 4 {
+        let a, s2 = rand_digits(s, 1, 3)
+        let b, s3 = rand_digits(s2, 1, 3)
+        (a + "." + b, s3)
+    } else if choice == 5 && depth > 0 {
+        let mut s2 = s
+        let count0, s3 = rand_range(s2, 4)
+        s2 = s3
+        let count = 1 + count0
+        let mut out = "("
+        let mut i = 0
+        while i < count {
+            let v, s4 = rand_value(s2, depth - 1)
+            s2 = s4
+            if i > 0 {
+                out += ","
+            }
+            out += v
+            i += 1
+        }
+        out += ")"
+        (out, s2)
+    } else if choice == 6 {
+        let b, s2 = rand_bool(s, 1, 2)
+        (if b { ".T." } else { ".F." }, s2)
+    } else {
+        let name, s2 = rand_upper_name(s)
+        ("." + name + ".", s2)
+    }
+}
+
+fn rand_args(state: i64) -> (String, i64) {
+    let mut s = state
+    let count0, s1 = rand_range(s, 6)
+    s = s1
+    let count = count0
+    let mut out = "("
+    let mut i = 0
+    while i < count {
+        let v, s2 = rand_value(s, 2)
+        s = s2
+        if i > 0 {
+            out += ","
+        }
+        out += v
+        let want_comment, s3 = rand_bool(s, 1, 6)
+        s = s3
+        if want_comment {
+            let c, s4 = rand_comment(s)
+            s = s4
+            out += c
+        }
+        i += 1
+    }
+    out += ")"
+    (out, s)
+}
+
+fn rand_data_statement(state: i64, id: i64) -> (String, i64) {
+    let mut s = state
+    let name, s1 = rand_upper_name(s)
+    s = s1
+    let args, s2 = rand_args(s)
+    s = s2
+    (f"#{id}={name}{args};", s)
+}
+
+fn wrap_as_step_file(data_section: String) -> String {
+    "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('fuzz'),'2;1');\nENDSEC;\nDATA;\n" +
+        data_section +
+        "\nENDSEC;\nEND-ISO-10303-21;\n"
+}
+
+#[test]
+fn fuzz_parse_never_aborts_and_roundtrips_when_ok() {
+    let mut state = 1_234_567
+    let mut iter = 0
+    while iter < 120 {
+        let stmt_count0, s1 = rand_range(state, 25)
+        state = s1
+        let stmt_count = 1 + stmt_count0
+        let mut data = ""
+        let mut i = 0
+        while i < stmt_count {
+            let stmt, s2 = rand_data_statement(state, 1 + i)
+            state = s2
+            data += stmt
+            data += "\n"
+            i += 1
+        }
+        let content = wrap_as_step_file(data)
+        match parse_repository_from_string_result(content) {
+            Err(_info) => {
+                // Accept parse errors; the invariant is: never abort or hang.
+            }
+            Ok(repo1) => {
+                let out1 = repo1.to_step_file()
+                match parse_repository_from_string_result(out1) {
+                    Err(_info2) => panic("fuzz: roundtrip re-parse failed")
+                    Ok(repo2) => {
+                        let out2 = repo2.to_step_file()
+                        assert_eq(out1, out2)
+                    }
+                }
+            }
+        }
+        iter += 1
+    }
+}
+
+#[test]
+fn fuzz_tokenizer_never_aborts() {
+    let mut state = 7_654_321
+    let mut iter = 0
+    while iter < 200 {
+        let stmt_count0, s1 = rand_range(state, 18)
+        state = s1
+        let stmt_count = stmt_count0
+        let mut data = ""
+        let mut i = 0
+        while i < stmt_count {
+            let stmt, s2 = rand_data_statement(state, 100 + i)
+            state = s2
+            data += stmt
+            data += "\n"
+            i += 1
+        }
+        // Either outcome is fine; it must simply terminate.
+        match tokenize_step_data_section(data) {
+            Ok(_) => {}
+            Err(_) => {}
+        }
+        iter += 1
+    }
+    assert_eq(iter, 200)
+}
+
+/// Keep the direct entry point referenced (used by integration tests too).
+pub fn _parse_marker(content: String) -> bool {
+    parse_repository_from_string(content).is_ok()
+}

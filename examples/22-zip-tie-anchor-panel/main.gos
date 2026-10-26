@@ -1,0 +1,120 @@
+//! 22-zip-tie-anchor-panel — a panel of zip-tie anchors with different slot
+//! geometries and strengths.
+
+use std::env
+use std::process
+
+use step
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "rows": step::opt_double(2.0, help: "Number of rows of anchors", min: Some(1.0))
+        "cols": step::opt_double(3.0, help: "Number of columns of anchors", min: Some(1.0))
+        "spacing": step::opt_double(25.0, help: "Spacing between anchors (mm)", min: Some(10.0))
+        "baseThickness": step::opt_double(3.0, help: "Thickness of the base plate (mm)", min: Some(1.0))
+        "anchorWidth": step::opt_double(12.0, help: "Outer width of each anchor (mm)", min: Some(5.0))
+        "anchorHeight": step::opt_double(8.0, help: "Total height of each anchor above base (mm)", min: Some(3.0))
+        "slotWidth": step::opt_double(6.0, help: "Width of the zip-tie slot (mm)", min: Some(1.0))
+        "slotHeight": step::opt_double(3.0, help: "Height of the zip-tie slot (mm)", min: Some(1.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(step::with_translate(spec), "22-zip-tie-anchor-panel", "Generate a zip-tie anchor panel STEP model.", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let rows = args.double_or("rows", 2.0) as i64
+    let cols = args.double_or("cols", 3.0) as i64
+    let spacing = args.double_or("spacing", 25.0)
+    let base_thickness = args.double_or("baseThickness", 3.0)
+    let anchor_width = args.double_or("anchorWidth", 12.0)
+    let anchor_height = args.double_or("anchorHeight", 8.0)
+    let slot_width = args.double_or("slotWidth", 6.0)
+    let slot_height = args.double_or("slotHeight", 3.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    // 1. Create the base plate
+    let panel_w = cols as f64 * spacing
+    let panel_l = rows as f64 * spacing
+    let base = step::cuboid(panel_w, panel_l, base_thickness)
+        .named("base")
+        .colored(step::CYAN)
+
+    // 2. Create a single anchor assembly (3 parts)
+    let wall_w = (anchor_width - slot_width) / 2.0
+    let bridge_h = anchor_height - slot_height
+    let left_wall = step::cuboid(wall_w, anchor_width, anchor_height)
+        .named("lw")
+        .colored(step::BLUE)
+        .moved(x: -anchor_width / 2.0, y: -anchor_width / 2.0, z: base_thickness)
+    let right_wall = step::cuboid(wall_w, anchor_width, anchor_height)
+        .named("rw")
+        .colored(step::BLUE)
+        .moved(x: slot_width / 2.0, y: -anchor_width / 2.0, z: base_thickness)
+    let bridge = step::cuboid(anchor_width, anchor_width, bridge_h)
+        .named("bridge")
+        .colored(step::BLUE)
+        .moved(x: -anchor_width / 2.0, y: -anchor_width / 2.0, z: base_thickness + slot_height)
+
+    // 3. Define the grid locations
+    let mut locs = #[]
+    let mut r = 0
+    while r < rows {
+        let mut c = 0
+        while c < cols {
+            let lx = c as f64 * spacing + spacing / 2.0 - panel_w / 2.0
+            let ly = r as f64 * spacing + spacing / 2.0 - panel_l / 2.0
+            locs.push((lx, ly, 0.0))
+            c += 1
+        }
+        r += 1
+    }
+
+    // 4. Assemble the design
+    let mut design = step::design(name: "zip-tie-anchor-panel", documentation: args.documentation())
+        .add(base.moved(x: tx - panel_w / 2.0, y: ty - panel_l / 2.0, z: tz))
+    let mut left_nodes = #[]
+    for n in left_wall.repeat_at(locs) {
+        left_nodes.push(n.moved(x: tx, y: ty, z: tz))
+    }
+    design = design.add_all(left_nodes)
+    let mut right_nodes = #[]
+    for n in right_wall.repeat_at(locs) {
+        right_nodes.push(n.moved(x: tx, y: ty, z: tz))
+    }
+    design = design.add_all(right_nodes)
+    let mut bridge_nodes = #[]
+    for n in bridge.repeat_at(locs) {
+        bridge_nodes.push(n.moved(x: tx, y: ty, z: tz))
+    }
+    design = design.add_all(bridge_nodes)
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

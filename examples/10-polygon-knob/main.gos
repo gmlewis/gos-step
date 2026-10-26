@@ -1,0 +1,71 @@
+//! 10-polygon-knob — a polygonal knob with a shaft hole.
+
+use std::env
+use std::process
+
+use step
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "sides": step::opt_double(6.0, help: "Number of sides for the knob (e.g. 6 for hexagon)", min: Some(3.0))
+        "diameter": step::opt_double(30.0, help: "Knob outer diameter (mm)", min: Some(0.0), min_exclusive: true)
+        "height": step::opt_double(15.0, help: "Knob height (mm)", min: Some(0.0), min_exclusive: true)
+        "holeSides": step::opt_double(6.0, help: "Number of sides for the shaft hole", min: Some(3.0))
+        "holeDiameter": step::opt_double(6.35, help: "Shaft hole diameter (mm)", min: Some(0.0), min_exclusive: true)
+        "holeRotation": step::opt_double(0.0, help: "Shaft hole rotation (degrees)")
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(step::with_translate(spec), "10-polygon-knob", "Generate a polygonal knob with a shaft hole.", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let sides = args.double_or("sides", 6.0) as i64
+    let diameter = args.double_or("diameter", 30.0)
+    let height = args.double_or("height", 15.0)
+    let hole_sides = args.double_or("holeSides", 6.0) as i64
+    let hole_diameter = args.double_or("holeDiameter", 6.35)
+    let hole_rotation = args.double_or("holeRotation", 0.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+    let outer = step::polygon(sides, diameter)
+    let hole = step::polygon(hole_sides, hole_diameter, hole_rotation)
+    let mut hole_rev = #[]
+    let mut i = hole.len() as i64 - 1
+    while i >= 0 {
+        hole_rev.push(hole[i])
+        i -= 1
+    }
+    let knob = step::extrude(step::profile(outer).add_hole(hole_rev), height)
+        .named("polygon-knob")
+        .colored(step::CYAN)
+        .moved(tx, ty, tz)
+    let design = step::design(name: "polygon-knob", documentation: args.documentation()).add(knob)
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

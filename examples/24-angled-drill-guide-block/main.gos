@@ -1,0 +1,186 @@
+//! 24-angled-drill-guide-block — a drill guide with configurable angles and
+//! bushing seat geometry.
+//!
+//! Usage: gos run examples/24-angled-drill-guide-block/main.gos --angle 15 --holeDiameter 9.5 > guide.step
+
+use std::env
+use std::math
+use std::process
+
+use step
+
+fn rotate_about_x(node: step::SceneNode, angle: f64, z_offset: f64) -> step::SceneNode {
+    let rad = angle * math::PI / 180.0
+    let s = math::sin(rad)
+    let c = math::cos(rad)
+    let y2 = -s * node.tz
+    let z2 = c * node.tz
+    node.moved(-node.tx, y2 - node.ty, z2 - node.tz)
+        .turned_x(angle)
+        .moved(0.0, 0.0, z_offset)
+}
+
+fn drill_guide(
+    angle: f64
+    id: f64
+    od: f64
+    h: f64
+    sd: f64
+    s_depth: f64
+    bw: f64
+    bl: f64
+    bt: f64
+) -> Vec<step::SceneNode> {
+    // 1. The Mounting Base
+    // Create a rounded base with four mounting holes and one central angled hole.
+    let base_outer = step::rounded_rect(bw, bl, 5.0)
+    let mounting_hole_dia = 5.0
+    let mounting_hole_profile = step::circle(mounting_hole_dia)
+    let mounting_hole_locs = #[
+        (10.0, 10.0)
+        (bw - 10.0, 10.0)
+        (bw - 10.0, bl - 10.0)
+        (10.0, bl - 10.0)
+    ]
+
+    // Angle hole in base (projection of the guide hole)
+    // Width remains 'id', length becomes 'id / cos(angle)'
+    let angle_rad = angle * math::PI / 180.0
+    let hole_l = id / math::cos(angle_rad)
+    let mut guide_hole = #[]
+    for p in step::ellipse(id, hole_l) {
+        guide_hole.push((p.0 + bw / 2.0, p.1 + bl / 2.0))
+    }
+    let guide_hole = guide_hole.rev()
+    let base_profile = step::profile(base_outer)
+        .add_holes_at(mounting_hole_locs, mounting_hole_profile)
+        .add_hole(guide_hole)
+    let base = step::extrude(base_profile, bt)
+        .named("base")
+        .colored(step::BLUE)
+        .moved(-bw / 2.0, -bl / 2.0, 0.0)
+
+    // 2. The Guide Tube
+    // Extend the tube slightly so it penetrates the base correctly.
+    let extra = od / 2.0 * math::sin((angle_rad).abs())
+    let main_guide_h = h - s_depth + extra
+    let guide_body = step::tube(od, id, main_guide_h)
+        .named("guide-body")
+        .colored(step::CYAN)
+        .moved(0.0, 0.0, -extra) // Move start point down
+    let seat_body = if s_depth > 0.0 && sd > id {
+        step::tube(od, sd, s_depth)
+            .named("bushing-seat")
+            .colored(step::CYAN)
+            .moved(0.0, 0.0, h - s_depth)
+    } else {
+        step::tube(od, id, s_depth)
+            .named("guide-top")
+            .colored(step::CYAN)
+            .moved(0.0, 0.0, h - s_depth)
+    }
+
+    // Group guide parts and rotate
+    let guide_parts = #[guide_body, seat_body]
+    let mut nodes = #[base]
+    for node in guide_parts {
+        nodes.push(rotate_about_x(node, angle, bt))
+    }
+    nodes
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "angle": step::opt_double(0.0, help: "Angle from vertical (degrees)", min: Some(-45.0), max: Some(45.0))
+        "holeDiameter": step::opt_double(9.5, help: "Inner hole diameter for the drill bit (mm). 9.5mm is standard for pocket holes.", min: Some(1.0))
+        "outerDiameter": step::opt_double(20.0, help: "Outer diameter of the guide body (mm)", min: Some(5.0))
+        "height": step::opt_double(40.0, help: "Total height of the guide tube (mm)", min: Some(10.0))
+        "seatDiameter": step::opt_double(12.0, help: "Diameter of the bushing seat (mm)", min: Some(0.0))
+        "seatDepth": step::opt_double(5.0, help: "Depth of the bushing seat (mm)", min: Some(0.0))
+        "baseWidth": step::opt_double(60.0, help: "Width of the mounting base (mm)", min: Some(20.0))
+        "baseLength": step::opt_double(40.0, help: "Length of the mounting base (mm)", min: Some(20.0))
+        "baseThickness": step::opt_double(5.0, help: "Thickness of the mounting base (mm)", min: Some(2.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "24-angled-drill-guide-block"
+        "Generate a parametric angled drill guide block."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let angle = match args.double("angle") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let hole_dia = match args.double("holeDiameter") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let outer_dia = match args.double("outerDiameter") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let height = match args.double("height") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let seat_dia = match args.double("seatDiameter") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let seat_depth = match args.double("seatDepth") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let base_w = match args.double("baseWidth") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let base_l = match args.double("baseLength") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let base_t = match args.double("baseThickness") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+    let nodes = drill_guide(angle, hole_dia, outer_dia, height, seat_dia, seat_depth, base_w, base_l, base_t)
+    let mut design = step::design(name: "angled-drill-guide", documentation: args.documentation())
+    for node in nodes {
+        design = design.add(node.moved(tx, ty, tz))
+    }
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

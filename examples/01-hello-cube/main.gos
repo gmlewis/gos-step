@@ -1,0 +1,76 @@
+//! 01-hello-cube — generate a cube STEP model.
+//!
+//! Usage: gos run examples/01-hello-cube/main.gos --edge 20 > cube.step
+
+use std::env
+use std::process
+
+use step
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "edge": step::opt_double(
+            20.0
+            short: 'e'
+            help: "Edge length in millimeters"
+            min: Some(0.0)
+            min_exclusive: true
+        )
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write STEP output to a file (default: stdout)")
+    }
+    let spec = step::with_translate(spec)
+
+    let args = match step::parse_args(
+        spec
+        "01-hello-cube"
+        "Generate a cube STEP model."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => {
+            let code = step::cli_report(err)
+            process::exit(code as i64)
+        }
+    }
+
+    let edge_mm = args.double_or("edge", 20.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    let design = step::design(name: "hello-cube", documentation: args.documentation())
+        .add(
+            step::cuboid(edge_mm, edge_mm, edge_mm)
+                .named("cube")
+                .colored(step::GREEN)
+                .moved(tx, ty, tz)
+        )
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

@@ -1,0 +1,165 @@
+//! 05-gridfinity-compatible-bin — generate a Gridfinity-compatible storage bin.
+//!
+//! Usage: gos run examples/05-gridfinity-compatible-bin/main.gos --rows 2 --cols 1 > bin.step
+
+use std::env
+use std::process
+
+use step
+use step::Face::{Back}
+
+const GRID_UNIT: f64 = 42.0
+const WALL_THICKNESS: f64 = 2.0
+const BASE_THICKNESS: f64 = 2.0
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "rows": step::opt_double(1.0, help: "Number of grid units in Y (rows)", min: Some(1.0))
+        "cols": step::opt_double(1.0, help: "Number of grid units in X (cols)", min: Some(1.0))
+        "height": step::opt_double(30.0, help: "Total bin height (mm)", min: Some(BASE_THICKNESS + 1.0))
+        "text": step::opt_string(help: "Label text to engrave")
+        "fontSize": step::opt_double(0.0, help: "Font size (mm), default is 60% of wall height", min: Some(0.0))
+        "depth": step::opt_double(0.5, help: "Engraving depth (mm)", min: Some(0.0), max: Some(WALL_THICKNESS - 0.1))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "05-gridfinity-compatible-bin"
+        "Generate a Gridfinity-compatible storage bin."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let rows = match args.double("rows") {
+        Ok(n) => n.value as i64
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let cols = match args.double("cols") {
+        Ok(n) => n.value as i64
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let height = match args.double("height") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let text_opt = args.string_opt("text")
+    let font_size_opt = match args.double("fontSize") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let emboss_depth = match args.double("depth") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    let total_width = cols as f64 * GRID_UNIT
+    let total_length = rows as f64 * GRID_UNIT
+
+    // 1. The Base
+    let base = step::cuboid(total_width, total_length, BASE_THICKNESS)
+        .named("bin-base")
+        .colored(step::RED)
+        .moved(tx, ty, tz)
+
+    // 2. Outer Walls
+    let outer_poly = #[
+        (0.0, 0.0)
+        (total_width, 0.0)
+        (total_width, total_length)
+        (0.0, total_length)
+    ]
+    // The hole is wound opposite to the outer boundary.
+    let inner_poly = #[
+        (WALL_THICKNESS, WALL_THICKNESS)
+        (total_width - WALL_THICKNESS, WALL_THICKNESS)
+        (total_width - WALL_THICKNESS, total_length - WALL_THICKNESS)
+        (WALL_THICKNESS, total_length - WALL_THICKNESS)
+    ].rev()
+    let wall_height = height - BASE_THICKNESS
+    let walls = step::extrude(step::profile(outer_poly).add_hole(inner_poly), wall_height)
+        .named("bin-walls")
+        .colored(step::CYAN)
+        .moved(tx, ty, tz + BASE_THICKNESS)
+
+    let mut design = step::design(name: "gridfinity-bin", documentation: args.documentation())
+        .add(base)
+        .add(walls)
+
+    // 3. Internal Dividers
+    for i in 1..cols {
+        let x = i as f64 * GRID_UNIT - WALL_THICKNESS / 2.0
+        let div = step::cuboid(WALL_THICKNESS, total_length - 2.0 * WALL_THICKNESS, wall_height)
+            .named(f"divider-x-{i}")
+            .colored(step::MAGENTA)
+            .moved(tx + x, ty + WALL_THICKNESS, tz + BASE_THICKNESS)
+        design = design.add(div)
+    }
+    for j in 1..rows {
+        let y = j as f64 * GRID_UNIT - WALL_THICKNESS / 2.0
+        let div = step::cuboid(total_width - 2.0 * WALL_THICKNESS, WALL_THICKNESS, wall_height)
+            .named(f"divider-y-{j}")
+            .colored(step::GREEN)
+            .moved(tx + WALL_THICKNESS, ty + y, tz + BASE_THICKNESS)
+        design = design.add(div)
+    }
+
+    // 4. Label Text
+    match text_opt {
+        Some(label) => {
+            let font = step::font("baloo")?
+            design = if font_size_opt > 0.0 {
+                design.add_text_on_face(
+                    walls
+                    label
+                    Back
+                    font
+                    font_size: Some(font_size_opt)
+                    emboss_depth: Some(emboss_depth)
+                    color: step::ORANGE
+                )
+            } else {
+                design.add_text_on_face(
+                    walls
+                    label
+                    Back
+                    font
+                    emboss_depth: Some(emboss_depth)
+                    color: step::ORANGE
+                )
+            }
+        }
+        None => {}
+    }
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

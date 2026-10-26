@@ -1,0 +1,96 @@
+//! Header serialization tests.
+
+use crate::header::{
+    FileDescription, FileName, FileSchema, HeaderEntity, HeaderSection, StringListOrDollar
+    StringOrDollar
+}
+
+fn description() -> FileDescription {
+    FileDescription::new(#[""], "2;1")
+}
+
+fn name() -> FileName {
+    FileName::new(
+        StringOrDollar::Str("cube.step")
+        StringOrDollar::Str("2025-01-01T00:00:00")
+        StringListOrDollar::List(#["gmlewis"])
+        StringListOrDollar::List(#["gmlewis/step", "https://github.com/gmlewis/gos-step"])
+        StringOrDollar::Str("gmlewis/step")
+        StringOrDollar::Str("gossamer")
+        StringOrDollar::Str("none")
+    )
+}
+
+#[test]
+fn file_description_statement_has_no_spaces() {
+    let h = HeaderSection::new(#[
+        HeaderEntity::FileDescription(description())
+        HeaderEntity::FileName(name())
+        HeaderEntity::FileSchema(FileSchema::new(#[
+            "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+        ]))
+    ])
+    let text = h.to_step_statements()
+    assert_eq(
+        text
+        "FILE_DESCRIPTION((''),'2;1');\nFILE_NAME('cube.step','2025-01-01T00:00:00',('gmlewis'),('gmlewis/step','https://github.com/gmlewis/gos-step'),'gmlewis/step','gossamer','none');\nFILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));"
+    )
+}
+
+#[test]
+fn comments_have_no_semicolon_and_escape_terminator() {
+    let h = HeaderSection::new(#[
+        HeaderEntity::Comment("hello\nworld */ end")
+    ])
+    assert_eq(
+        h.to_step_statements()
+        "/*\n  hello\n  world * / end\n*/"
+    )
+}
+
+#[test]
+fn empty_header_section() {
+    assert_eq(HeaderSection::empty().to_step_header_section(), "HEADER;\nENDSEC;")
+}
+
+#[test]
+fn full_header_section_wraps_statements() {
+    let h = HeaderSection::new(#[
+        HeaderEntity::FileDescription(description())
+    ])
+    assert_eq(
+        h.to_step_header_section()
+        "HEADER;\nFILE_DESCRIPTION((''),'2;1');\nENDSEC;"
+    )
+}
+
+#[test]
+fn dollar_markers() {
+    let fd = FileDescription::new(#[], "2;1")
+    let h = HeaderSection::new(#[
+        HeaderEntity::FileDescription(fd)
+    ])
+    assert_eq(h.to_step_statements(), "FILE_DESCRIPTION((),'2;1');")
+
+    let n = FileName::new(
+        StringOrDollar::Dollar
+        StringOrDollar::Dollar
+        StringListOrDollar::Dollar
+        StringListOrDollar::Dollar
+        StringOrDollar::Dollar
+        StringOrDollar::Dollar
+        StringOrDollar::Dollar
+    )
+    let h2 = HeaderSection::new(#[
+        HeaderEntity::FileName(n)
+    ])
+    assert_eq(h2.to_step_statements(), "FILE_NAME($,$,$,$,$,$,$);")
+}
+
+#[test]
+fn raw_statement_is_trimmed() {
+    let h = HeaderSection::new(#[
+        HeaderEntity::Raw("  FILE_CUSTOM('x')  ")
+    ])
+    assert_eq(h.to_step_statements(), "FILE_CUSTOM('x');")
+}

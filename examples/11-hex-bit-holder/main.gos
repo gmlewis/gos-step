@@ -1,0 +1,139 @@
+//! 11-hex-bit-holder — a parametric hex bit holder for standard 1/4" (6.35 mm)
+//! screwdriver bits.
+//!
+//! Usage: gos run examples/11-hex-bit-holder/main.gos > holder.step
+
+use std::env
+use std::math
+use std::process
+
+use step
+
+fn hex_bit_holder(
+    rows: i64
+    cols: i64
+    bit_diameter_across_flats: f64
+    spacing: f64
+    height: f64
+) -> step::Shape {
+    let d = bit_diameter_across_flats / math::cos(30.0 * math::PI / 180.0)
+    let hex = step::polygon(6, d, 30.0)
+    let total_width = cols as f64 * spacing
+    let total_length = rows as f64 * spacing
+    let outer = step::rect(total_width, total_length)
+    let mut holes = #[]
+    for r in 0..rows {
+        for c in 0..cols {
+            let tx = c as f64 * spacing + spacing / 2.0
+            let ty = r as f64 * spacing + spacing / 2.0
+            let mut moved = #[]
+            for p in hex {
+                moved.push((p.0 + tx, p.1 + ty))
+            }
+            holes.push(moved.rev())
+        }
+    }
+    step::extrude(step::profile(outer).add_all_holes(holes), height)
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "rows": step::opt_double(2.0, help: "Number of rows in the grid", min: Some(1.0))
+        "cols": step::opt_double(4.0, help: "Number of columns in the grid", min: Some(1.0))
+        "bitDiameter": step::opt_double(6.35, help: "Hex bit diameter across flats (mm). Standard is 6.35 (1/4\").", min: Some(0.0), min_exclusive: true)
+        "tolerance": step::opt_double(0.15, help: "Extra clearance for the bit hole (mm)", min: Some(0.0))
+        "spacing": step::opt_double(10.0, help: "Center-to-center spacing between bits (mm)", min: Some(7.5))
+        "height": step::opt_double(15.0, help: "Height of the bit holder block (mm)", min: Some(2.0))
+        "baseHeight": step::opt_double(3.0, help: "Thickness of the solid base plate (mm)", min: Some(1.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "11-hex-bit-holder"
+        "Generate a parametric hex bit holder."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let rows = match args.double("rows") {
+        Ok(n) => n.value as i64
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let cols = match args.double("cols") {
+        Ok(n) => n.value as i64
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let bit_diameter = match args.double("bitDiameter") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let tolerance = match args.double("tolerance") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let spacing = match args.double("spacing") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let holder_height = match args.double("height") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let base_height = match args.double("baseHeight") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    //
+    let total_width = cols as f64 * spacing
+    let total_length = rows as f64 * spacing
+
+    // 1. The solid base plate
+    let base = step::cuboid(total_width, total_length, base_height)
+        .named("holder-base")
+        .colored(step::MAGENTA)
+        .moved(tx, ty, tz)
+
+    // 2. The holder block with hex holes
+    let holder = hex_bit_holder(rows, cols, bit_diameter + tolerance, spacing, holder_height)
+        .named("holder-grid")
+        .colored(step::BLUE)
+        .moved(tx, ty, tz + base_height)
+
+    //
+    let design = step::design(name: "hex-bit-holder", documentation: args.documentation())
+        .add(base)
+        .add(holder)
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

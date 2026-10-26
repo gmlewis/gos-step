@@ -1,0 +1,64 @@
+//! Profile and shape builders, and the fluent scene-node API.
+
+
+use crate::cad::geometry::{Vec2, force_ccw}
+use crate::cad::types::{Rgb, SceneNode, Shape}
+
+/// A hollow (or solid) cylinder.
+pub fn tube(outer_diameter: f64, inner_diameter: f64, height: f64, segments: i64 = 64) -> Shape {
+    let outer = crate::cad::types::Profile2D::circle(outer_diameter, segments)
+    if inner_diameter <= 0.0 {
+        crate::cad::types::ExtrudedProfile::new(outer, height)
+    } else {
+        let hole = reverse_pts(crate::cad::types::Profile2D::circle(inner_diameter, segments))
+        crate::cad::types::ExtrudedProfile::new(outer, height, #[hole])
+    }
+}
+
+fn reverse_pts(pts: Vec<Vec2>) -> Vec<Vec2> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+/// Group nodes without performing a CSG union.
+pub fn union_all(nodes: Vec<SceneNode>, name: String = "union") -> SceneNode {
+    SceneNode {
+        shape: Shape::Union(crate::cad::types::BooleanUnion { nodes: nodes })
+        name: name
+        color: Rgb::orange()
+        tx: 0.0
+        ty: 0.0
+        tz: 0.0
+        rx: 0.0
+        ry: 0.0
+        rz: 0.0
+    }
+}
+
+/// A boolean difference between a base node and a set of cutters.
+pub fn difference(base: SceneNode, cutters: Vec<SceneNode>, name: String = "difference") -> SceneNode {
+    SceneNode {
+        shape: Shape::Difference(crate::cad::types::BooleanDifference {
+            base: base
+            cutters: cutters
+        })
+        name: name
+        color: Rgb::orange()
+        tx: 0.0
+        ty: 0.0
+        tz: 0.0
+        rx: 0.0
+        ry: 0.0
+        rz: 0.0
+    }
+}
+
+// Keep the unused helpers reachable for the compilers.
+pub fn _unused_force_ccw(pts: Vec<Vec2>) -> Vec<Vec2> {
+    force_ccw(pts)
+}

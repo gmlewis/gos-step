@@ -1,0 +1,11 @@
+[project]
+id = "github.com/gmlewis/gos-step"
+version = "0.1.0"
+gossamer-version = "^v0.75.1"
+license = "Apache-2.0"
+authors = ["Glenn Lewis"]
+
+# `use step` is the one import every consumer and example needs.
+[lib]
+name = "step"
+path = "src/lib.gos"

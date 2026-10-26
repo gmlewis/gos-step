@@ -1,0 +1,361 @@
+//! STEP entity models: topology family.
+//!
+//! Ported 1:1 from the reference implementation; the
+//! serialization (including spacing quirks) is the contract.
+
+use crate::entity::Entity
+use crate::fmt::{step_str}
+use crate::ids::{Ref}
+
+fn step_str_or_dollar(s: String) -> String {
+    if s == "$" { "$" } else { step_str(s) }
+}
+
+fn bool_to_step(b: bool) -> String {
+    if b { ".T." } else { ".F." }
+}
+
+// Represents an ADVANCED_FACE entity.
+// Example from simple-box.step:
+//   ADVANCED_FACE('',(#46),#40,.F.)
+pub struct AdvancedFace {
+    pub name: String
+    pub bounds: Vec<Ref>
+    pub surface: Ref
+    pub same_sense: bool
+}
+
+impl AdvancedFace {
+    pub fn new(name: String, bounds: Vec<Ref>, surface: Ref, same_sense: bool) -> AdvancedFace {
+        AdvancedFace { name: name, bounds: bounds, surface: surface, same_sense: same_sense }
+    }
+}
+
+impl Entity for AdvancedFace {
+    fn to_step(self) -> String {
+        let bounds_str = self.bounds.map(|r| { f"#{r.id.value}" }).join(",")
+        let surface_str = f"#{self.surface.id.value}"
+        let ss_str = bool_to_step(self.same_sense)
+        f"ADVANCED_FACE({step_str_or_dollar(self.name)},({bounds_str}),{surface_str},{ss_str})"
+    }
+}
+
+// Represents a BREP_WITH_VOIDS entity.
+// Example:
+//   BREP_WITH_VOIDS('', #10, (#20,#30))
+// where #10 is the outer CLOSED_SHELL and #20/#30 are void CLOSED_SHELLs.
+pub struct BrepWithVoids {
+    pub name: String
+    pub outer: Ref
+    pub voids: Vec<Ref>
+}
+
+impl BrepWithVoids {
+    pub fn new(name: String, outer: Ref, voids: Vec<Ref>) -> BrepWithVoids {
+        BrepWithVoids { name: name, outer: outer, voids: voids }
+    }
+}
+
+impl Entity for BrepWithVoids {
+    fn to_step(self) -> String {
+        let outer_str = f"#{self.outer.id.value}"
+        let voids_str = self.voids.map(|r| { f"#{r.id.value}" }).join(",")
+        f"BREP_WITH_VOIDS({step_str_or_dollar(self.name)},{outer_str},({voids_str}))"
+    }
+}
+
+// Represents a CLOSED_SHELL entity.
+// Example from simple-box.step:
+//   CLOSED_SHELL('',(#34,#35,#36,#37,#38,#39))
+pub struct ClosedShell {
+    pub name: String
+    pub faces: Vec<Ref>
+}
+
+impl ClosedShell {
+    pub fn new(name: String, faces: Vec<Ref>) -> ClosedShell {
+        ClosedShell { name: name, faces: faces }
+    }
+}
+
+impl Entity for ClosedShell {
+    fn to_step(self) -> String {
+        let faces_str = self.faces.map(|r| { f"#{r.id.value}" }).join(",")
+        f"CLOSED_SHELL({step_str_or_dollar(self.name)},({faces_str}))"
+    }
+}
+
+// Represents a CONNECTED_FACE_SET entity.
+// Example:
+//   CONNECTED_FACE_SET('name', (#10, #20))
+pub struct ConnectedFaceSet {
+    pub name: String
+    pub cfs_faces: Vec<Ref>
+}
+
+impl ConnectedFaceSet {
+    pub fn new(name: String, cfs_faces: Vec<Ref>) -> ConnectedFaceSet {
+        ConnectedFaceSet { name: name, cfs_faces: cfs_faces }
+    }
+}
+
+impl Entity for ConnectedFaceSet {
+    fn to_step(self) -> String {
+        let faces_str = self.cfs_faces.map(|r| { f"#{r.id.value}" }).join(",")
+        f"CONNECTED_FACE_SET({step_str(self.name)},({faces_str}))"
+    }
+}
+
+// Represents an EDGE_CURVE entity.
+// Example from simple-box.step:
+//   EDGE_CURVE('',#82,#83,#102,.T.)
+pub struct EdgeCurve {
+    pub name: String
+    pub edge_start: Ref
+    pub edge_end: Ref
+    pub edge_geometry: Ref
+    pub same_sense: bool
+}
+
+impl EdgeCurve {
+    pub fn new(name: String, edge_start: Ref, edge_end: Ref, edge_geometry: Ref, same_sense: bool) -> EdgeCurve {
+        EdgeCurve { name: name, edge_start: edge_start, edge_end: edge_end, edge_geometry: edge_geometry, same_sense: same_sense }
+    }
+}
+
+impl Entity for EdgeCurve {
+    fn to_step(self) -> String {
+        let start_str = f"#{self.edge_start.id.value}"
+        let end_str = f"#{self.edge_end.id.value}"
+        let geom_str = f"#{self.edge_geometry.id.value}"
+        let ss_str = bool_to_step(self.same_sense)
+        f"EDGE_CURVE({step_str_or_dollar(self.name)},{start_str},{end_str},{geom_str},{ss_str})"
+    }
+}
+
+// Represents an EDGE_LOOP entity.
+// Example from simple-box.step:
+//   EDGE_LOOP('',(#58,#59,#60,#61))
+pub struct EdgeLoop {
+    pub name: String
+    pub edges: Vec<Ref>
+}
+
+impl EdgeLoop {
+    pub fn new(name: String, edges: Vec<Ref>) -> EdgeLoop {
+        EdgeLoop { name: name, edges: edges }
+    }
+}
+
+impl Entity for EdgeLoop {
+    fn to_step(self) -> String {
+        let edges_str = self.edges.map(|r| { f"#{r.id.value}" }).join(",")
+        f"EDGE_LOOP({step_str_or_dollar(self.name)},({edges_str}))"
+    }
+}
+
+// Represents a FACE_BOUND entity.
+// Example from MachineContactMedium.step:
+//   FACE_BOUND('',#158,.T.)
+pub struct FaceBound {
+    pub name: String
+    pub bound: Ref
+    pub orientation: bool
+}
+
+impl FaceBound {
+    pub fn new(name: String, bound: Ref, orientation: bool) -> FaceBound {
+        FaceBound { name: name, bound: bound, orientation: orientation }
+    }
+}
+
+impl Entity for FaceBound {
+    fn to_step(self) -> String {
+        let bound_str = f"#{self.bound.id.value}"
+        let ori_str = bool_to_step(self.orientation)
+        f"FACE_BOUND({step_str_or_dollar(self.name)},{bound_str},{ori_str})"
+    }
+}
+
+// Represents a FACE_OUTER_BOUND entity.
+// Example from simple-box.step:
+//   FACE_OUTER_BOUND('',#52,.T.)
+pub struct FaceOuterBound {
+    pub name: String
+    pub bound: Ref
+    pub orientation: bool
+}
+
+impl FaceOuterBound {
+    pub fn new(name: String, bound: Ref, orientation: bool) -> FaceOuterBound {
+        FaceOuterBound { name: name, bound: bound, orientation: orientation }
+    }
+}
+
+impl Entity for FaceOuterBound {
+    fn to_step(self) -> String {
+        let bound_str = f"#{self.bound.id.value}"
+        let ori_str = bool_to_step(self.orientation)
+        f"FACE_OUTER_BOUND({step_str_or_dollar(self.name)},{bound_str},{ori_str})"
+    }
+}
+
+// Represents a FACE_SURFACE entity.
+// Example:
+//   FACE_SURFACE('name', (#10, #20), #30, .T.)
+pub struct FaceSurface {
+    pub name: String
+    pub bounds: Vec<Ref>
+    pub face_geometry: Ref
+    pub same_sense: bool
+}
+
+impl FaceSurface {
+    pub fn new(name: String, bounds: Vec<Ref>, face_geometry: Ref, same_sense: bool) -> FaceSurface {
+        FaceSurface { name: name, bounds: bounds, face_geometry: face_geometry, same_sense: same_sense }
+    }
+}
+
+impl Entity for FaceSurface {
+    fn to_step(self) -> String {
+        let bounds_str = self.bounds.map(|r| { f"#{r.id.value}" }).join(",")
+        let geom_str = f"#{self.face_geometry.id.value}"
+        let ss_str = bool_to_step(self.same_sense)
+        f"FACE_SURFACE({step_str(self.name)},({bounds_str}),{geom_str},{ss_str})"
+    }
+}
+
+// Represents a MANIFOLD_SOLID_BREP entity.
+// Example from simple-box.step:
+//   MANIFOLD_SOLID_BREP('',#33)
+pub struct ManifoldSolidBrep {
+    pub name: String
+    pub outer: Ref
+}
+
+impl ManifoldSolidBrep {
+    pub fn new(name: String, outer: Ref) -> ManifoldSolidBrep {
+        ManifoldSolidBrep { name: name, outer: outer }
+    }
+}
+
+impl Entity for ManifoldSolidBrep {
+    fn to_step(self) -> String {
+        let outer_str = f"#{self.outer.id.value}"
+        f"MANIFOLD_SOLID_BREP({step_str_or_dollar(self.name)},{outer_str})"
+    }
+}
+
+// Represents an OPEN_SHELL entity.
+// Example:
+//   OPEN_SHELL('name', (#10, #20))
+pub struct OpenShell {
+    pub name: String
+    pub faces: Vec<Ref>
+}
+
+impl OpenShell {
+    pub fn new(name: String, faces: Vec<Ref>) -> OpenShell {
+        OpenShell { name: name, faces: faces }
+    }
+}
+
+impl Entity for OpenShell {
+    fn to_step(self) -> String {
+        let faces_str = self.faces.map(|r| { f"#{r.id.value}" }).join(",")
+        f"OPEN_SHELL({step_str(self.name)},({faces_str}))"
+    }
+}
+
+// Represents an ORIENTED_EDGE entity.
+// Example from simple-box.step:
+//   ORIENTED_EDGE('',*,*,#90,.T.)
+// Note: STEP uses the 2nd and 3rd args for edge_start/edge_end; in the fixture these are `*`.
+pub struct OrientedEdge {
+    pub name: String
+    pub edge_start: String
+    pub edge_end: String
+    pub edge_element: Ref
+    pub orientation: bool
+}
+
+impl OrientedEdge {
+    pub fn new(name: String, edge_start: String, edge_end: String, edge_element: Ref, orientation: bool) -> OrientedEdge {
+        OrientedEdge { name: name, edge_start: edge_start, edge_end: edge_end, edge_element: edge_element, orientation: orientation }
+    }
+}
+
+impl Entity for OrientedEdge {
+    fn to_step(self) -> String {
+        let edge_element_str = f"#{self.edge_element.id.value}"
+        let ori_str = bool_to_step(self.orientation)
+        f"ORIENTED_EDGE({step_str_or_dollar(self.name)},{self.edge_start},{self.edge_end},{edge_element_str},{ori_str})"
+    }
+}
+
+// Represents a SHELL_BASED_SURFACE_MODEL entity.
+// Example:
+//   SHELL_BASED_SURFACE_MODEL('name', (#10, #20))
+// where #10 and #20 are OPEN_SHELL or CLOSED_SHELL entities.
+pub struct ShellBasedSurfaceModel {
+    pub name: String
+    pub sbsm_boundary: Vec<Ref>
+}
+
+impl ShellBasedSurfaceModel {
+    pub fn new(name: String, sbsm_boundary: Vec<Ref>) -> ShellBasedSurfaceModel {
+        ShellBasedSurfaceModel { name: name, sbsm_boundary: sbsm_boundary }
+    }
+}
+
+impl Entity for ShellBasedSurfaceModel {
+    fn to_step(self) -> String {
+        let bounds_str = self.sbsm_boundary.map(|r| { f"#{r.id.value}" }).join(",")
+        f"SHELL_BASED_SURFACE_MODEL({step_str(self.name)},({bounds_str}))"
+    }
+}
+
+// Represents a SUBFACE entity.
+// Example:
+//   SUBFACE('name', (#10, #20), #30)
+// where #10, #20 are FACE_BOUNDs and #30 is the parent FACE.
+pub struct Subface {
+    pub name: String
+    pub bounds: Vec<Ref>
+    pub parent_face: Ref
+}
+
+impl Subface {
+    pub fn new(name: String, bounds: Vec<Ref>, parent_face: Ref) -> Subface {
+        Subface { name: name, bounds: bounds, parent_face: parent_face }
+    }
+}
+
+impl Entity for Subface {
+    fn to_step(self) -> String {
+        let bounds_str = self.bounds.map(|r| { f"#{r.id.value}" }).join(",")
+        let parent_str = f"#{self.parent_face.id.value}"
+        f"SUBFACE({step_str(self.name)},({bounds_str}),{parent_str})"
+    }
+}
+
+// Represents a VERTEX_POINT entity.
+// Example from simple-box.step:
+//   VERTEX_POINT('',#161)
+pub struct VertexPoint {
+    pub name: String
+    pub vertex_geometry: Ref
+}
+
+impl VertexPoint {
+    pub fn new(name: String, vertex_geometry: Ref) -> VertexPoint {
+        VertexPoint { name: name, vertex_geometry: vertex_geometry }
+    }
+}
+
+impl Entity for VertexPoint {
+    fn to_step(self) -> String {
+        let geom_str = f"#{self.vertex_geometry.id.value}"
+        f"VERTEX_POINT({step_str_or_dollar(self.name)},{geom_str})"
+    }
+}

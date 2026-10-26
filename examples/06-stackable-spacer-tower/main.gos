@@ -1,0 +1,179 @@
+//! 06-stackable-spacer-tower — stackable spacers with full-height tapers.
+
+use std::env
+use std::process
+
+use step
+
+/// Reverse a 2D loop.
+fn rev_pts(pts: Vec<step::V2>) -> Vec<step::V2> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+/// Build one spacer: the female body ring whose bore is tapered over the full
+/// body height, plus the male protrusion ring whose outer surface is tapered
+/// over its full height at the same cone angle.
+fn stack_spacer(
+    index: i64
+    base_z: f64
+    tx: f64
+    ty: f64
+    od: f64
+    mid: f64
+    id: f64
+    height: f64
+    click_height: f64
+    taper_d: f64
+    fit_clear: f64
+    resolution: i64
+    color: step::Rgb
+) -> Vec<step::SceneNode> {
+    let body_steps: i64 = 8
+    let click_steps: i64 = 4
+    let outer_circle = step::circle(od, resolution)
+    // Holes are wound opposite to the outer boundary.
+    let inner_circle = rev_pts(step::circle(id, resolution))
+    let mut nodes = #[]
+
+    // Female bore: largest at the bottom, narrowing to mid + fit_clear at the
+    // top. Each layer uses its mid-height diameter to keep the stair-step
+    // small.
+    let body_step_h = height / body_steps as f64
+    let mut k = 0
+    while k < body_steps {
+        let z0 = k as f64 * body_step_h
+        let zm = z0 + body_step_h / 2.0
+        let bore = mid + fit_clear + taper_d * (1.0 - zm / height)
+        let profile = step::profile(outer_circle)
+            .add_hole(rev_pts(step::circle(bore, resolution)))
+        nodes.push(
+            step::extrude(profile, body_step_h)
+                .named(f"spacer-body-{index}-{k}")
+                .colored(color)
+                .moved(x: tx, y: ty, z: base_z + z0)
+        )
+        k += 1
+    }
+
+    // Male outer surface: mid at the bottom, narrowing at the same cone angle
+    // (taper_d over the body height) across the click's full height.
+    let click_base = base_z + height
+    let click_step_h = click_height / click_steps as f64
+    let mut kk = 0
+    while kk < click_steps {
+        let z0 = kk as f64 * click_step_h
+        let zm = z0 + click_step_h / 2.0
+        let outer_d = mid - taper_d * zm / height
+        let profile = step::profile(step::circle(outer_d, resolution))
+            .add_hole(inner_circle)
+        nodes.push(
+            step::extrude(profile, click_step_h)
+                .named(f"spacer-click-{index}-{kk}")
+                .colored(color)
+                .moved(x: tx, y: ty, z: click_base + z0)
+        )
+        kk += 1
+    }
+    nodes
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "count": step::opt_double(1.0, help: "Number of spacers in the tower", min: Some(1.0))
+        "id": step::opt_double(10.0, help: "Inner diameter of the hole (mm)", min: Some(1.0))
+        "mid": step::opt_double(15.0, help: "Diameter of the interlocking feature (mm)", min: Some(2.0))
+        "od": step::opt_double(25.0, help: "Outer diameter of the spacer (mm)", min: Some(3.0))
+        "height": step::opt_double(5.0, help: "Height of the spacer body (mm)", min: Some(1.0))
+        "clickHeight": step::opt_double(2.0, help: "Height of the interlocking protrusion (mm)", min: Some(0.5))
+        "resolution": step::opt_double(64.0, help: "Circle segments", min: Some(3.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(step::with_translate(spec), "06-stackable-spacer-tower", "Generate a stackable spacer tower.", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let count = args.double_or("count", 1.0) as i64
+    let id = args.double_or("id", 10.0)
+    let mid = args.double_or("mid", 15.0)
+    let od = args.double_or("od", 25.0)
+    let height = args.double_or("height", 5.0)
+    let click_height = args.double_or("clickHeight", 2.0)
+    let resolution = args.double_or("resolution", 64.0) as i64
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    // Basic validation
+    if id >= mid {
+        eprintln(f"error: inner diameter ({id}) must be less than middle diameter ({mid})")
+        process::exit(1)
+    }
+    if mid >= od {
+        eprintln(f"error: middle diameter ({mid}) must be less than outer diameter ({od})")
+        process::exit(1)
+    }
+    if click_height >= height {
+        eprintln(f"error: clickHeight ({click_height}) must be less than height ({height})")
+        process::exit(1)
+    }
+
+    let mut design = step::design(name: "spacer-tower", documentation: args.documentation())
+
+    // Full-height draft: the female bore narrows over the whole body height
+    // and the male outer surface narrows at the same cone angle over its full
+    // height. This self-centres the parts and gives a constant clearance, so
+    // print tolerances do not stop them stacking.
+    let mut taper_d = 0.2
+    if taper_d > (mid - id) * 0.3 {
+        taper_d = (mid - id) * 0.3
+    }
+    if taper_d > (od - mid) * 0.3 {
+        taper_d = (od - mid) * 0.3
+    }
+    let fit_clear = 0.05
+    let colors = #[step::ORANGE, step::GREEN, step::BLUE]
+    let mut i = 0
+    while i < count {
+        // Bodies stack directly on one another; each protrusion sits inside
+        // the bore of the spacer above it.
+        let base_z = tz + i as f64 * height
+        let color = colors[i % 3]
+        let spacer = stack_spacer(i, base_z, tx, ty, od, mid, id, height, click_height, taper_d, fit_clear, resolution, color)
+        design = design.add_all(spacer)
+        i += 1
+    }
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

@@ -1,0 +1,21 @@
+//! Raw STEP entity, preserving unknown/unmodelled DATA statements.
+
+use crate::entity::Entity
+
+/// An entity whose name and argument text are kept verbatim.
+pub struct RawEntity {
+    pub name: String
+    pub args: String
+}
+
+impl RawEntity {
+    pub fn new(name: String, args: String) -> RawEntity {
+        RawEntity { name: name, args: args }
+    }
+}
+
+impl Entity for RawEntity {
+    fn to_step(self) -> String {
+        f"{self.name}{self.args}"
+    }
+}

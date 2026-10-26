@@ -1,0 +1,169 @@
+//! 08-snap-fit-test-strip — cantilever snap arms and receiver slots with
+//! varying interference levels to test print tolerances.
+
+use std::env
+use std::process
+
+use step
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "clearance": step::opt_double(0.2, help: "Nominal clearance between arm and receiver (mm)", min: Some(0.0))
+        "interference": step::opt_double(0.4, help: "Base hook interference (mm)", min: Some(0.0))
+        "stepCount": step::opt_double(5.0, help: "Number of test steps", min: Some(1.0))
+        "interferenceStep": step::opt_double(0.1, help: "Amount to increase interference at each step (mm)")
+        "snapClearance": step::opt_double(0.5, help: "Vertical engage clearance (mm)", min: Some(0.0))
+        "armThickness": step::opt_double(1.5, help: "Cantilever arm thickness (mm)", min: Some(0.5))
+        "armWidth": step::opt_double(10.0, help: "Snap arm width (mm)", min: Some(2.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(step::with_translate(spec), "08-snap-fit-test-strip", "Generate a snap-fit tolerance test strip.", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let clearance = args.double_or("clearance", 0.2)
+    let base_interference = args.double_or("interference", 0.4)
+    let step_count = args.double_or("stepCount", 5.0) as i64
+    let interference_step = args.double_or("interferenceStep", 0.1)
+    let snap_clearance = args.double_or("snapClearance", 0.5)
+    let arm_thickness = args.double_or("armThickness", 1.5)
+    let arm_width = args.double_or("armWidth", 10.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    // Constants
+    let arm_height = 20.0
+    let base_height = 5.0
+    let step_spacing = arm_width + 10.0
+    let receiver_length = 15.0
+    let hook_height = 3.0
+    let mut design = step::design(name: "snap-fit-test", documentation: args.documentation())
+
+    // 1. Generate the test strip (Arms)
+    let strip_length = step_count as f64 * step_spacing
+    let arm_base_strip = step::cuboid(strip_length, 15.0, base_height)
+        .named("arm-base")
+        .colored(step::CYAN)
+        .moved(x: tx, y: ty, z: tz)
+    design = design.add(arm_base_strip)
+    let mut i = 0
+    while i < step_count {
+        let x_offset = i as f64 * step_spacing + step_spacing / 2.0
+        let current_interference = base_interference + i as f64 * interference_step
+
+        // The Arm Profile (side view in XZ plane)
+        // X = thickness, Y = height (will become Z)
+        let arm_poly = #[
+            (0.0, 0.0)
+            (arm_thickness, 0.0)
+            (arm_thickness, arm_height - hook_height)
+            (arm_thickness + current_interference, arm_height - hook_height / 2.0)
+            (arm_thickness, arm_height)
+            (0.0, arm_height)
+        ]
+        let arm = step::extrude(step::profile(arm_poly), arm_width)
+            .named(f"arm-{i}")
+            .colored(step::ORANGE)
+            // ExtrudedProfile is in XY, extruding along Z.
+            // We want:
+            // Local Y (Height) -> World Z (Up)
+            // Local Z (Width) -> World X (Along strip)
+            // Local X (Thickness) -> World Y (Across strips)
+            .turned_x(90.0) // Local Y -> World Z, Local Z -> World -Y
+            .turned_z(90.0) // World X -> World Y, World -Y -> World X
+            .moved(
+                x: tx + x_offset - arm_width / 2.0
+                y: ty + 7.5 - arm_thickness / 2.0
+                z: tz + base_height
+            )
+        design = design.add(arm)
+        i += 1
+    }
+
+    // 2. Generate the Receiver Strip
+    let receiver_y_offset = 30.0
+    let receiver_base_strip = step::cuboid(strip_length, receiver_length, base_height)
+        .named("receiver-base")
+        .colored(step::BLUE)
+        .moved(x: tx, y: ty + receiver_y_offset, z: tz)
+    design = design.add(receiver_base_strip)
+    let mut si = 0
+    while si < step_count {
+        let x_offset = si as f64 * step_spacing + step_spacing / 2.0
+
+        // Build the receiver "cage" growing UP from the base
+
+        // Back wall
+        let back_wall = step::cuboid(arm_width + 4.0, 2.0, arm_height)
+            .named(f"recv-back-{si}")
+            .colored(step::BLUE)
+            .moved(
+                x: tx + x_offset - (arm_width + 4.0) / 2.0
+                y: ty + receiver_y_offset
+                z: tz + base_height
+            )
+        design = design.add(back_wall)
+
+        // Side walls
+        let side_wall_l = step::cuboid(2.0, 8.0, arm_height)
+            .named(f"recv-side-l-{si}")
+            .colored(step::BLUE)
+            .moved(
+                x: tx + x_offset - (arm_width + 4.0) / 2.0
+                y: ty + receiver_y_offset + 2.0
+                z: tz + base_height
+            )
+        design = design.add(side_wall_l)
+        let side_wall_r = step::cuboid(2.0, 8.0, arm_height)
+            .named(f"recv-side-r-{si}")
+            .colored(step::BLUE)
+            .moved(
+                x: tx + x_offset + arm_width / 2.0
+                y: ty + receiver_y_offset + 2.0
+                z: tz + base_height
+            )
+        design = design.add(side_wall_r)
+
+        // The "ledge" the snap hooks onto
+        let ledge_height = 3.0
+        let ledge = step::cuboid(arm_width, 2.0, ledge_height)
+            .named(f"recv-ledge-{si}")
+            .colored(step::RED)
+            .moved(
+                x: tx + x_offset - arm_width / 2.0
+                y: ty + receiver_y_offset + 2.0 + arm_thickness + clearance
+                z: tz + base_height + arm_height - ledge_height - snap_clearance
+            )
+        design = design.add(ledge)
+        si += 1
+    }
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

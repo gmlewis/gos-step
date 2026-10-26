@@ -1,0 +1,107 @@
+//! 02-calibration-chamfer-block — a chamfer/fillet calibration block.
+
+use std::env
+use std::process
+
+use step
+
+fn validate_dims(
+    length_mm: f64
+    width_mm: f64
+    height_mm: f64
+    chamfer_size_mm: f64
+    fillet_radius_mm: f64
+) -> bool {
+    let min_xy = if length_mm < width_mm { length_mm } else { width_mm }
+    let min_xy_half = min_xy / 2.0
+    if chamfer_size_mm < 0.0 {
+        eprintln("error: --chamferSize must be >= 0")
+        return false
+    }
+    if fillet_radius_mm < 0.0 {
+        eprintln("error: --filletRadius must be >= 0")
+        return false
+    }
+    if chamfer_size_mm > min_xy_half {
+        eprintln("error: --chamferSize is too large for the block footprint")
+        return false
+    }
+    if fillet_radius_mm > min_xy_half {
+        eprintln("error: --filletRadius is too large for the block footprint")
+        return false
+    }
+    if fillet_radius_mm > 0.0 && fillet_radius_mm > height_mm {
+        eprintln("error: --filletRadius must be <= --height")
+        return false
+    }
+    true
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "length": step::opt_double(50.0, help: "Block length (mm)", min: Some(0.0), min_exclusive: true)
+        "width": step::opt_double(20.0, help: "Block width (mm)", min: Some(0.0), min_exclusive: true)
+        "height": step::opt_double(12.0, help: "Block height (mm)", min: Some(0.0), min_exclusive: true)
+        "chamferSize": step::opt_double(1.0, help: "Top-edge chamfer size (mm). Ignored when --filletRadius > 0.", min: Some(0.0))
+        "filletRadius": step::opt_double(0.0, help: "Top-edge fillet radius (mm). When > 0, takes precedence over chamfer.", min: Some(0.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(step::with_translate(spec), "02-calibration-chamfer-block", "Generate a chamfer/fillet calibration block STEP model.", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let length_mm = args.double_or("length", 50.0)
+    let width_mm = args.double_or("width", 20.0)
+    let height_mm = args.double_or("height", 12.0)
+    let chamfer_size_mm = args.double_or("chamferSize", 1.0)
+    let fillet_radius_mm = args.double_or("filletRadius", 0.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+    if !validate_dims(length_mm, width_mm, height_mm, chamfer_size_mm, fillet_radius_mm) {
+        eprintln("error: invalid dimensions")
+        process::exit(1)
+    }
+    let block = step::chamfer_block(
+        length_mm
+        width_mm
+        height_mm
+        chamfer: chamfer_size_mm
+        fillet_radius: fillet_radius_mm
+        fillet_segments: 10
+    )
+        .named("calibration-block")
+        .moved(tx, ty, tz)
+    let design = step::design(
+        name: "calibration-chamfer-block"
+        documentation: args.documentation()
+    )
+        .add(block)
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

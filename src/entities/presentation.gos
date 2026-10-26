@@ -1,0 +1,377 @@
+//! STEP entity models: presentation family.
+//!
+//! Ported 1:1 from the reference implementation; the
+//! serialization (including spacing quirks) is the contract.
+
+use crate::entity::Entity
+use crate::fmt::{fmt_num, step_str}
+use crate::ids::{Ref}
+
+fn step_str_or_dollar(s: String) -> String {
+    if s == "$" { "$" } else { step_str(s) }
+}
+
+fn bool_to_step(b: bool) -> String {
+    if b { ".T." } else { ".F." }
+}
+
+// Represents an ANNOTATION_OCCURRENCE entity.
+// Example:
+//   ANNOTATION_OCCURRENCE('name', (#10), #20)
+// where #10 is a style assignment and #20 is the item.
+pub struct AnnotationOccurrence {
+    pub name: String
+    pub styles: Vec<Ref>
+    pub item: Ref
+}
+
+impl AnnotationOccurrence {
+    pub fn new(name: String, styles: Vec<Ref>, item: Ref) -> AnnotationOccurrence {
+        AnnotationOccurrence { name: name, styles: styles, item: item }
+    }
+}
+
+impl Entity for AnnotationOccurrence {
+    fn to_step(self) -> String {
+        let styles_str = self.styles.map(|r| { f"#{r.id.value}" }).join(",")
+        let item_str = f"#{self.item.id.value}"
+        f"ANNOTATION_OCCURRENCE({step_str(self.name)},({styles_str}),{item_str})"
+    }
+}
+
+// Represents a COLOUR_RGB entity.
+pub struct ColorRgb {
+    pub name: String
+    pub red: f64
+    pub green: f64
+    pub blue: f64
+}
+
+impl ColorRgb {
+    pub fn new(name: String, red: f64, green: f64, blue: f64) -> ColorRgb {
+        ColorRgb { name: name, red: red, green: green, blue: blue }
+    }
+}
+
+impl Entity for ColorRgb {
+    fn to_step(self) -> String {
+        f"COLOUR_RGB({step_str(self.name)},{fmt_num(self.red)},{fmt_num(self.green)},{fmt_num(self.blue)})"
+    }
+}
+
+// Represents a FILL_AREA_STYLE entity.
+pub struct FillAreaStyle {
+    pub name: String
+    pub styles: Vec<Ref>
+}
+
+impl FillAreaStyle {
+    pub fn new(name: String, styles: Vec<Ref>) -> FillAreaStyle {
+        FillAreaStyle { name: name, styles: styles }
+    }
+}
+
+impl Entity for FillAreaStyle {
+    fn to_step(self) -> String {
+        let styles_str = self.styles.map(|r| { f"#{r.id.value}" }).join(",")
+        f"FILL_AREA_STYLE({step_str(self.name)},({styles_str}))"
+    }
+}
+
+// Represents a FILL_AREA_STYLE_COLOUR entity.
+// Note: The STEP keyword uses UK spelling (COLOUR), but internal names use US spelling.
+pub struct FillAreaStyleColor {
+    pub name: String
+    pub color: Ref
+}
+
+impl FillAreaStyleColor {
+    pub fn new(name: String, color: Ref) -> FillAreaStyleColor {
+        FillAreaStyleColor { name: name, color: color }
+    }
+}
+
+impl Entity for FillAreaStyleColor {
+    fn to_step(self) -> String {
+        let c = f"#{self.color.id.value}"
+        f"FILL_AREA_STYLE_COLOUR({step_str(self.name)},{c})"
+    }
+}
+
+// Represents a HIDDEN_ELEMENT_OVER_RIDING_STYLED_ITEM entity.
+// Example:
+//   HIDDEN_ELEMENT_OVER_RIDING_STYLED_ITEM('name', (#10), #20, #30)
+// where #10 is a style assignment, #20 is the item, and #30 is the over-ridden styled item.
+pub struct HiddenElementOverRidingStyledItem {
+    pub name: String
+    pub styles: Vec<Ref>
+    pub item: Ref
+    pub over_ridden_styled_item: Ref
+}
+
+impl HiddenElementOverRidingStyledItem {
+    pub fn new(name: String, styles: Vec<Ref>, item: Ref, over_ridden_styled_item: Ref) -> HiddenElementOverRidingStyledItem {
+        HiddenElementOverRidingStyledItem { name: name, styles: styles, item: item, over_ridden_styled_item: over_ridden_styled_item }
+    }
+}
+
+impl Entity for HiddenElementOverRidingStyledItem {
+    fn to_step(self) -> String {
+        let styles_str = self.styles.map(|r| { f"#{r.id.value}" }).join(",")
+        let item_str = f"#{self.item.id.value}"
+        let over_str = f"#{self.over_ridden_styled_item.id.value}"
+        f"HIDDEN_ELEMENT_OVER_RIDING_STYLED_ITEM({step_str(self.name)},({styles_str}),{item_str},{over_str})"
+    }
+}
+
+// Represents a MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION entity.
+// This is part of the presentation representation context in many STEP files.
+pub struct MechanicalDesignGeometricPresentationRepresentation {
+    pub name: String
+    pub items: Vec<Ref>
+    pub context: Ref
+}
+
+impl MechanicalDesignGeometricPresentationRepresentation {
+    pub fn new(name: String, items: Vec<Ref>, context: Ref) -> MechanicalDesignGeometricPresentationRepresentation {
+        MechanicalDesignGeometricPresentationRepresentation { name: name, items: items, context: context }
+    }
+}
+
+impl Entity for MechanicalDesignGeometricPresentationRepresentation {
+    fn to_step(self) -> String {
+        let items_str = self.items.map(|r| { f"#{r.id.value}" }).join(",")
+        let ctx = f"#{self.context.id.value}"
+        f"MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION({step_str(self.name)},({items_str}),{ctx})"
+    }
+}
+
+// Represents an OVER_RIDING_STYLED_ITEM entity.
+// Example:
+//   OVER_RIDING_STYLED_ITEM('name', (#10), #20, #30)
+// where #10 is a style assignment, #20 is the item, and #30 is the over-ridden styled item.
+pub struct OverRidingStyledItem {
+    pub name: String
+    pub styles: Vec<Ref>
+    pub item: Ref
+    pub over_ridden_styled_item: Ref
+}
+
+impl OverRidingStyledItem {
+    pub fn new(name: String, styles: Vec<Ref>, item: Ref, over_ridden_styled_item: Ref) -> OverRidingStyledItem {
+        OverRidingStyledItem { name: name, styles: styles, item: item, over_ridden_styled_item: over_ridden_styled_item }
+    }
+}
+
+impl Entity for OverRidingStyledItem {
+    fn to_step(self) -> String {
+        let styles_str = self.styles.map(|r| { f"#{r.id.value}" }).join(",")
+        let item_str = f"#{self.item.id.value}"
+        let over_str = f"#{self.over_ridden_styled_item.id.value}"
+        f"OVER_RIDING_STYLED_ITEM({step_str(self.name)},({styles_str}),{item_str},{over_str})"
+    }
+}
+
+// Represents a DRAUGHTING_PRE_DEFINED_COLOUR entity.
+// Example:
+//   DRAUGHTING_PRE_DEFINED_COLOUR('red')
+pub struct DraughtingPreDefinedColour {
+    pub name: String
+}
+
+impl DraughtingPreDefinedColour {
+    pub fn new(name: String) -> DraughtingPreDefinedColour {
+        DraughtingPreDefinedColour { name: name }
+    }
+}
+
+impl Entity for DraughtingPreDefinedColour {
+    fn to_step(self) -> String {
+        f"DRAUGHTING_PRE_DEFINED_COLOUR({step_str(self.name)})"
+    }
+}
+
+// Represents a PRESENTATION_LAYER_ASSIGNMENT entity.
+// Items are generic references (often to geometry/topology entities).
+pub struct PresentationLayerAssignment {
+    pub name: String
+    pub description: String
+    pub items: Vec<Ref>
+}
+
+impl PresentationLayerAssignment {
+    pub fn new(name: String, description: String, items: Vec<Ref>) -> PresentationLayerAssignment {
+        PresentationLayerAssignment { name: name, description: description, items: items }
+    }
+}
+
+impl Entity for PresentationLayerAssignment {
+    fn to_step(self) -> String {
+        let items_str = self.items.map(|r| { f"#{r.id.value}" }).join(",")
+        f"PRESENTATION_LAYER_ASSIGNMENT({step_str(self.name)},{step_str(self.description)},({items_str}))"
+    }
+}
+
+// Represents a PRESENTATION_STYLE_ASSIGNMENT entity.
+pub struct PresentationStyleAssignment {
+    pub styles: Vec<Ref>
+}
+
+impl PresentationStyleAssignment {
+    pub fn new(styles: Vec<Ref>) -> PresentationStyleAssignment {
+        PresentationStyleAssignment { styles: styles }
+    }
+}
+
+impl Entity for PresentationStyleAssignment {
+    fn to_step(self) -> String {
+        let styles_str = self.styles.map(|r| { f"#{r.id.value}" }).join(",")
+        f"PRESENTATION_STYLE_ASSIGNMENT(({styles_str}))"
+    }
+}
+
+// Represents a STYLED_ITEM entity.
+pub struct StyledItem {
+    pub name: String
+    pub styles: Vec<Ref>
+    pub item: Ref
+}
+
+impl StyledItem {
+    pub fn new(name: String, styles: Vec<Ref>, item: Ref) -> StyledItem {
+        StyledItem { name: name, styles: styles, item: item }
+    }
+}
+
+impl Entity for StyledItem {
+    fn to_step(self) -> String {
+        let styles_str = self.styles.map(|r| { f"#{r.id.value}" }).join(",")
+        let item = f"#{self.item.id.value}"
+        f"STYLED_ITEM({step_str(self.name)},({styles_str}),{item})"
+    }
+}
+
+// Represents a SURFACE_SIDE_STYLE entity.
+pub struct SurfaceSideStyle {
+    pub name: String
+    pub styles: Vec<Ref>
+}
+
+impl SurfaceSideStyle {
+    pub fn new(name: String, styles: Vec<Ref>) -> SurfaceSideStyle {
+        SurfaceSideStyle { name: name, styles: styles }
+    }
+}
+
+impl Entity for SurfaceSideStyle {
+    fn to_step(self) -> String {
+        let styles_str = self.styles.map(|r| { f"#{r.id.value}" }).join(",")
+        f"SURFACE_SIDE_STYLE({step_str(self.name)},({styles_str}))"
+    }
+}
+
+// Represents a SURFACE_STYLE_FILL_AREA entity.
+pub struct SurfaceStyleFillArea {
+    pub fill_area: Ref
+}
+
+impl SurfaceStyleFillArea {
+    pub fn new(fill_area: Ref) -> SurfaceStyleFillArea {
+        SurfaceStyleFillArea { fill_area: fill_area }
+    }
+}
+
+impl Entity for SurfaceStyleFillArea {
+    fn to_step(self) -> String {
+        let fa = f"#{self.fill_area.id.value}"
+        f"SURFACE_STYLE_FILL_AREA({fa})"
+    }
+}
+
+// Represents a SURFACE_STYLE_USAGE entity.
+pub struct SurfaceStyleUsage {
+    // STEP enumeration literal, e.g. ".BOTH.".
+    pub side: String
+    pub style: Ref
+}
+
+impl SurfaceStyleUsage {
+    pub fn new(side: String, style: Ref) -> SurfaceStyleUsage {
+        SurfaceStyleUsage { side: side, style: style }
+    }
+}
+
+impl Entity for SurfaceStyleUsage {
+    fn to_step(self) -> String {
+        let style = f"#{self.style.id.value}"
+        f"SURFACE_STYLE_USAGE({self.side},{style})"
+    }
+}
+
+// Represents a text_path enumeration in STEP.
+pub enum TextPath {
+    Left
+    Right
+    Up
+    Down
+}
+
+impl Entity for TextPath {
+    fn to_step(self) -> String {
+        match self {
+            TextPath::Left => ".LEFT."
+            TextPath::Right => ".RIGHT."
+            TextPath::Up => ".UP."
+            TextPath::Down => ".DOWN."
+        }
+    }
+}
+
+impl TextPath {
+    pub fn from_string(s: String) -> Option<TextPath> {
+        match s {
+            ".LEFT." => Some(TextPath::Left)
+            ".RIGHT." => Some(TextPath::Right)
+            ".UP." => Some(TextPath::Up)
+            ".DOWN." => Some(TextPath::Down)
+            _ => None
+        }
+    }
+}
+
+// Represents a TEXT_LITERAL entity.
+// Example:
+//   TEXT_LITERAL('name', 'literal', #10, 'alignment', .RIGHT., #20)
+pub struct TextLiteral {
+    pub name: String
+    pub literal: String
+    pub placement: Ref
+    pub alignment: String
+    pub path: TextPath
+    pub font: Ref
+}
+
+impl TextLiteral {
+    pub fn new(name: String, literal: String, placement: Ref, alignment: String, path: TextPath, font: Ref) -> TextLiteral {
+        TextLiteral { name: name, literal: literal, placement: placement, alignment: alignment, path: path, font: font }
+    }
+}
+
+impl Entity for TextLiteral {
+    fn to_step(self) -> String {
+        let placement_str = f"#{self.placement.id.value}"
+        let path_str = self.path.to_step()
+        let font_str = f"#{self.font.id.value}"
+        f"TEXT_LITERAL({step_str(self.name)},{step_str(self.literal)},{placement_str},{step_str(self.alignment)},{path_str},{font_str})"
+    }
+}
+
+/// Serialize a text path without cross-module trait dispatch.
+pub fn text_path_to_step(v: TextPath) -> String {
+    match v {
+        TextPath::Left => ".LEFT."
+        TextPath::Right => ".RIGHT."
+        TextPath::Up => ".UP."
+        TextPath::Down => ".DOWN."
+    }
+}

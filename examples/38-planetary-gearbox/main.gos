@@ -1,0 +1,897 @@
+//! 38-planetary-gearbox
+//!
+//! A print-in-place herringbone planetary gearbox, ported from
+//! `github.com/gmlewis/go-bjk/cmd/make-planetary-gearbox` and the Blackjack
+//! `HerringboneGear` node (`herringbone_gear.lua`).
+//!
+//! The center "sun" gear, three orbiting "planet" gears, and the enclosing
+//! inward-facing "ring" gear are all herringbone gears. The ring gear is
+//! generated as the envelope of the mating planet gear, exactly as the Lua node
+//! does it.
+//!
+//! Gear terminology and formulas follow the HerringboneGear node:
+//!
+//!   pitch radius = gear_module * num_teeth / 2
+//!   base radius  = pitch radius * cos(pressure_angle)
+//!   root radius  = pitch radius - 1.25 * module
+//!   outer radius = pitch radius + module
+//!
+//! For a planetary set with a sun, Np planet gears, and an internal ring gear:
+//!
+//!   ring = sun + 2*planet
+//!   (sun + ring) % planets == 0
+//!
+//! With all four inner gears identical (planet == sun) the second condition
+//! becomes sun % 3 == 0 for three planets, so the default here is 12 teeth.
+//!
+//! ## Why the STEP file is small
+//!
+//! The Blackjack node evaluates every gear as a triangle mesh: it walks the
+//! full gear length in `(num_elbows + 1) * 2 * resolution` horizontal slices,
+//! regenerating every tooth facet per slice. Here each gear's 2D outline is
+//! built exactly once and then swept through `num_elbows + 1` linearly twisted
+//! extrusions - only the elbow vertices are needed as cross-sections, so the
+//! model is much smaller than the equivalent STL. Non-coplanar swept bands are
+//! split into planar triangles so every STEP face is planar and the model
+//! tessellates without gaps. The exported design is Z-up (the gears are built
+//! with their axes along +Y and rotated +90 deg about X), so it sits flat on a
+//! build plate: 30 mm tall with a 136 mm footprint. Pass `--yUp` to keep the
+//! native Y-up frame.
+//!
+//! Usage (stdout):
+//!   gos run examples/38-planetary-gearbox/main.gos -- > gearbox.step
+//!
+//! Usage (write file):
+//!   ./examples/run-example.sh 38 --numTeeth 12 -o gearbox.step
+//!
+//! Parameter mapping (Go flag -> this program):
+//!   -mod   --module          -gl  --gearLength      -ha  --helixAngle
+//!   -hr    --holeRadius      -ht  --holeType        -ne  --numElbows
+//!   -nt    --numTeeth        -planets --numPlanets  -planetTeeth --planetTeeth
+//!   -pa    --pressureAngle   -ringTeeth --ringTeeth -tol --tolerance
+//!   -outerThickness --outerThickness                -res --resolution
+//!   -o     --out
+//!   (-obj, -stl, -swapyz, -repo and -debug are mesh-export options and have
+//!   no STEP equivalent.)
+
+use std::env
+use std::math
+use std::process
+
+use step
+
+const DEG: f64 = math::PI / 180.0
+
+const POINTS_IN_INVOLUTE: i64 = 20
+
+const TWO_PI: f64 = 2.0 * math::PI
+
+/// Maximum profile rotation (degrees) between adjacent swept cross-sections.
+/// Each adjacent pair becomes a ring of planar quads approximating the twisted
+/// surface, so this bounds how far a quad can cut inside the true helix.
+/// 24 deg keeps the chord sagitta below ~2% of the gear radius, which is about
+/// the faceting the Blackjack mesh uses at its default settings.
+const MAX_SWEEP_STEP_DEG: f64 = 24.0
+
+struct GearDims {
+    pub num_teeth: i64
+    pub pitch_radius: f64
+    pub base_radius: f64
+    pub root_radius: f64
+    pub outer_radius: f64
+}
+
+struct PlanetPlacement {
+    pub x: f64
+    pub z: f64
+    pub phi_deg: f64
+}
+
+struct GearboxConfig {
+    pub gear_module: f64
+    pub gear_length: f64
+    pub helix_angle_deg: f64
+    pub helix_angle_sun: f64
+    pub pressure_angle: f64
+    pub num_elbows: i64
+    pub resolution: i64
+    pub hole_type: String
+    pub hole_radius: f64
+    pub tolerance: f64
+    pub outer_thickness: f64
+    pub sun: GearDims
+    pub planet: GearDims
+    pub ring: GearDims
+    pub ring_teeth: i64
+    pub center_distance: f64
+    pub center_delta: f64
+    pub sun_direction: f64
+    pub planet_direction: f64
+    pub planets: Vec<PlanetPlacement>
+}
+
+struct GearParams {
+    pub gear_module: f64
+    pub gear_length: f64
+    pub helix_angle: f64
+    pub hole_radius: f64
+    pub hole_type: String
+    pub num_elbows: i64
+    pub num_teeth: i64
+    pub num_planets: i64
+    pub planet_teeth: i64
+    pub pressure_angle: f64
+    pub ring_teeth: i64
+    pub tolerance: f64
+    pub outer_thickness: f64
+    pub resolution: i64
+}
+
+struct RingGeometry {
+    /// Inner (toothed) profile in the XZ plane, clockwise.
+    pub inner: Vec<step::V2>
+    pub outer_radius: f64
+    /// Angular phase that aligns the ring teeth with planet 0.
+    pub phase: f64
+    pub ring_scale: f64
+    pub max_helix_mate: f64
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "module": step::opt_double(3.0, short: 'm', help: "Gear module (tooth size), see https://www.stlgears.com/theory#module")
+        "gearLength": step::opt_double(30.0, short: 'g', help: "Gear length (mm)")
+        "helixAngle": step::opt_double(30.0, short: 'a', help: "Helix angle in degrees (clamped to 0..45)")
+        "holeRadius": step::opt_double(10.0, short: 'r', help: "Hole minimum radius (mm)")
+        "holeType": step::opt_string(short: 't', help: "Hole type: None, Squared, Hexagonal, Octagonal, Circular")
+        "numElbows": step::opt_int(4, short: 'e', help: "Number of elbows in each herringbone gear")
+        "numTeeth": step::opt_int(12, short: 'n', help: "Number of teeth on the sun gear")
+        "numPlanets": step::opt_int(3, short: 'p', help: "Number of orbiting planet gears")
+        "planetTeeth": step::opt_int(0, short: 'P', help: "Number of teeth on each planet gear (0 means same as --numTeeth)")
+        "pressureAngle": step::opt_double(20.0, short: 'A', help: "Pressure angle in degrees")
+        "ringTeeth": step::opt_int(0, short: 'R', help: "Number of teeth on the ring gear (0 means sun + 2*planet)")
+        "tolerance": step::opt_double(0.25, short: 'T', help: "Target minimum 3D-printer clearance between meshing flanks (mm)")
+        "outerThickness": step::opt_double(10.0, short: 'w', help: "Radial wall thickness from the closest ring notch to the outer surface (mm)")
+        "resolution": step::opt_int(9, short: 's', help: "Number of points in each curved section of the tooth outline")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+        "yUp": step::flag(help: "Keep the native Y-up orientation (gear axes along +Y) instead of rotating the design flat for printing")
+    }
+    let args = match step::parse_args(spec, "38-planetary-gearbox", "Generate a print-in-place herringbone planetary gearbox.", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let hole_type = args.string_opt("holeType").unwrap_or("None")
+    let params = GearParams {
+        gear_module: args.double_or("module", 3.0)
+        gear_length: args.double_or("gearLength", 30.0)
+        helix_angle: args.double_or("helixAngle", 30.0)
+        hole_radius: args.double_or("holeRadius", 10.0)
+        hole_type: hole_type
+        num_elbows: args.int_or("numElbows", 4)
+        num_teeth: args.int_or("numTeeth", 12)
+        num_planets: args.int_or("numPlanets", 3)
+        planet_teeth: args.int_or("planetTeeth", 0)
+        pressure_angle: args.double_or("pressureAngle", 20.0)
+        ring_teeth: args.int_or("ringTeeth", 0)
+        tolerance: args.double_or("tolerance", 0.25)
+        outer_thickness: args.double_or("outerThickness", 10.0)
+        resolution: args.int_or("resolution", 9)
+    }
+    let out_path = args.string_opt("out")
+    let y_up = args.flag("yUp")
+    let documentation = args.documentation()
+    let cfg = compute_config(params)
+    let design = build_design(cfg, documentation, y_up)
+    match out_path {
+        Some(_) => print_config(cfg)
+        None => {}
+    }
+    design.write_step(out_path)?
+    Ok(())
+}
+
+fn fail(msg: String) {
+    eprintln("error: " + msg)
+    process::exit(1)
+}
+
+/// Reference float formatting for report text.
+fn num(n: f64) -> String {
+    step::ref_to_string(n)
+}
+
+fn print_config(cfg: GearboxConfig) {
+    eprintln(f"sun:    teeth={cfg.sun.num_teeth} pitch_radius={num(cfg.sun.pitch_radius)} base_radius={num(cfg.sun.base_radius)} root_radius={num(cfg.sun.root_radius)} outer_radius={num(cfg.sun.outer_radius)}")
+    eprintln(f"planet: teeth={cfg.planet.num_teeth} pitch_radius={num(cfg.planet.pitch_radius)} base_radius={num(cfg.planet.base_radius)} root_radius={num(cfg.planet.root_radius)} outer_radius={num(cfg.planet.outer_radius)}")
+    eprintln(f"ring:   teeth={cfg.ring.num_teeth} pitch_radius={num(cfg.ring.pitch_radius)} base_radius={num(cfg.ring.base_radius)} nominal_tooth_tip={num(cfg.ring.outer_radius)} nominal_notch={num(cfg.ring.root_radius)}")
+    eprintln(f"center distance (sun-planet and ring-planet): {num(cfg.center_distance)} (zero-backlash center distance + {num(cfg.center_delta)})")
+    eprintln(f"target minimum clearance: {num(cfg.tolerance)}, outer thickness: {num(cfg.outer_thickness)}")
+    let mut i = 0
+    while i < cfg.planets.len() {
+        let p = cfg.planets[i]
+        eprintln(f"planet {i}: pos=({num(p.x)}, 0, {num(p.z)}) rotation={num(p.phi_deg)} deg")
+        i += 1
+    }
+    eprintln(f"helix angle: {num(cfg.helix_angle_deg)} deg (sun generator: {num(cfg.helix_angle_sun)} deg)")
+}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+fn compute_config(p: GearParams) -> GearboxConfig {
+    if p.gear_module <= 0.0 {
+        fail("--module must be > 0")
+    }
+    if p.gear_length <= 0.0 {
+        fail("--gearLength must be > 0")
+    }
+    if p.num_teeth < 6 {
+        fail("--numTeeth must be >= 6 (Blackjack's HerringboneGear minimum)")
+    }
+    if p.num_elbows < 1 {
+        fail("--numElbows must be >= 1")
+    }
+    if p.resolution < 1 {
+        fail("--resolution must be >= 1")
+    }
+    if p.num_planets < 1 {
+        fail("--numPlanets must be >= 1")
+    }
+    if p.pressure_angle < 1.0 {
+        fail("--pressureAngle must be >= 1")
+    }
+    if p.tolerance < 0.0 {
+        fail("--tolerance must be >= 0")
+    }
+    if p.outer_thickness <= 0.0 {
+        fail("--outerThickness must be > 0")
+    }
+    if p.hole_type == "Hollow" {
+        fail("--holeType=Hollow describes an open shell (no top or bottom cap) and cannot be written as a solid STEP body; use None or one of Squared, Hexagonal, Octagonal, Circular")
+    }
+
+    let planet_teeth = if p.planet_teeth == 0 {
+        p.num_teeth
+    } else {
+        p.planet_teeth
+    }
+    if planet_teeth < 6 {
+        fail("--planetTeeth must be >= 6 (or 0 to use --numTeeth)")
+    }
+
+    let ring_teeth = if p.ring_teeth == 0 {
+        p.num_teeth + 2 * planet_teeth
+    } else {
+        p.ring_teeth
+    }
+    if ring_teeth != p.num_teeth + 2 * planet_teeth {
+        fail(f"--ringTeeth ({ring_teeth}) must equal --numTeeth + 2*--planetTeeth = {p.num_teeth} + 2*{planet_teeth} = {p.num_teeth + 2 * planet_teeth} for a standard internal mesh")
+    }
+
+    // Assembly condition for equally-spaced planets.
+    if (p.num_teeth + ring_teeth) % p.num_planets != 0 {
+        let suggested = suggest_planet_teeth(p.num_teeth, p.num_planets)
+        fail(f"tooth counts (sun={p.num_teeth}, planet={planet_teeth}, ring={ring_teeth}) cannot be equally spaced in {p.num_planets} positions: (sun+ring)={p.num_teeth + ring_teeth} must be divisible by {p.num_planets}.\n  With all four inner gears identical, this requires --numTeeth to be divisible by 3.\n  Try: --numTeeth 12, --numTeeth 15, or --planetTeeth {suggested} (ring={p.num_teeth + 2 * suggested})")
+    }
+
+    let pa = p.pressure_angle * DEG
+    let ha = clamp(p.helix_angle, 0.0, 45.0) * DEG
+
+    let sun = new_gear_dims(p.gear_module, pa, p.num_teeth)
+    let planet = new_gear_dims(p.gear_module, pa, planet_teeth)
+    let ring_nominal = new_gear_dims(p.gear_module, pa, ring_teeth)
+    // Nominal internal-gear radii for reporting.
+    let ring = GearDims {
+        root_radius: ring_nominal.pitch_radius + p.gear_module
+        outer_radius: ring_nominal.pitch_radius - 1.25 * p.gear_module
+        ..ring_nominal
+    }
+
+    if p.hole_type != "None" && (p.hole_radius >= sun.root_radius || p.hole_radius >= planet.root_radius) {
+        fail(f"--holeRadius ({num(p.hole_radius)}) must be less than the gear root radius (sun={num(sun.root_radius)}, planet={num(planet.root_radius)})")
+    }
+
+    // Increase the sun/planet center distance so the actual normal flank
+    // clearance is the requested tolerance. The same center distance is used
+    // for the ring envelope.
+    let center_delta = if p.tolerance > 0.0 {
+        p.tolerance * 2.0
+    } else {
+        0.0
+    }
+    let center_distance = sun.pitch_radius + planet.pitch_radius + center_delta
+
+    // Match the helix angle at the pitch circle. The Lua node defines the helix
+    // angle at the outer radius, so the pitch-circle angle is
+    // tan(beta_pitch) = tan(ha) * N/(N+2).
+    let tan_beta_pitch = step::tan(ha) * planet_teeth as f64 / (planet_teeth + 2) as f64
+    let helix_angle_sun = clamp(step::atan(tan_beta_pitch * (p.num_teeth + 2) as f64 / p.num_teeth as f64) / DEG, 0.0, 45.0)
+
+    // Sun phase is 0: tooth 0 of the sun points along +X.
+    let sun_direction = 1.0
+    let planet_direction = -1.0 // opposite to the sun for an external mesh
+
+    // Place the planets and compute their rotations.
+    let mut planets: Vec<PlanetPlacement> = #[]
+    for j in 0..p.num_planets {
+        let theta = TWO_PI * j as f64 / p.num_planets as f64
+        let s = frac(p.num_teeth as f64 * theta / TWO_PI)
+        // External sun/planet mesh: frac_sun(theta) + frac_planet(theta+pi) = 1/2.
+        let phi = theta + math::PI - TWO_PI / planet_teeth as f64 * (0.5 - s)
+        planets.push(PlanetPlacement {
+            x: center_distance * math::cos(theta)
+            z: center_distance * math::sin(theta)
+            phi_deg: norm_angle(phi) / DEG
+        })
+    }
+
+    GearboxConfig {
+        gear_module: p.gear_module
+        gear_length: p.gear_length
+        helix_angle_deg: ha / DEG
+        helix_angle_sun: helix_angle_sun
+        pressure_angle: p.pressure_angle
+        num_elbows: p.num_elbows
+        resolution: p.resolution
+        hole_type: p.hole_type
+        hole_radius: p.hole_radius
+        tolerance: p.tolerance
+        outer_thickness: p.outer_thickness
+        sun: sun
+        planet: planet
+        ring: ring
+        ring_teeth: ring_teeth
+        center_distance: center_distance
+        center_delta: center_delta
+        sun_direction: sun_direction
+        planet_direction: planet_direction
+        planets: planets
+    }
+}
+
+fn new_gear_dims(gear_module: f64, pressure_angle: f64, num_teeth: i64) -> GearDims {
+    let pitch = gear_module * num_teeth as f64 / 2.0
+    GearDims {
+        num_teeth: num_teeth
+        pitch_radius: pitch
+        base_radius: pitch * math::cos(pressure_angle)
+        root_radius: pitch - 1.25 * gear_module
+        outer_radius: pitch + gear_module
+    }
+}
+
+/// suggest_planet_teeth returns a planet tooth count close to sun_teeth that
+/// makes (sun + ring) = 2*(sun + planet) divisible by the number of planets.
+fn suggest_planet_teeth(sun_teeth: i64, planets: i64) -> i64 {
+    for offset in 1..20 {
+        let candidates = #[sun_teeth - offset, sun_teeth + offset]
+        for candidate in candidates {
+            if candidate < 6 {
+                continue
+            }
+            let ring = sun_teeth + 2 * candidate
+            if (sun_teeth + ring) % planets == 0 {
+                return candidate
+            }
+        }
+    }
+    sun_teeth
+}
+
+// ---------------------------------------------------------------------------
+// Design
+// ---------------------------------------------------------------------------
+
+fn build_design(cfg: GearboxConfig, documentation: String, y_up: bool) -> step::Design {
+    let mut design = step::design(name: "planetary-gearbox", description: "Print-in-place herringbone planetary gearbox", documentation: documentation)
+
+    // Sun gear.
+    //
+    // Fabrication sites and most slicers treat +Z as up, while the gear axes here
+    // run along +Y. Rotate the whole design +90 deg about X to lay it flat on the
+    // build plate: Rx(90) maps (x, y, z) -> (x, -z, y), so the 30 mm gear length
+    // becomes the print height instead of the 136 mm ring diameter. `--yUp`
+    // keeps the native orientation.
+    let sun_outline = gear_outline(cfg.gear_module, cfg.pressure_angle, cfg.sun.num_teeth, cfg.resolution)
+    let sun_max_rot = step::tan(deg2rad(cfg.helix_angle_sun)) * (cfg.gear_length / 2.0) / cfg.sun.outer_radius
+    let sun_node = make_gear_shape(sun_outline, gear_holes(cfg, cfg.sun), cfg.gear_length, cfg.num_elbows, sun_max_rot, cfg.sun_direction, true, false)
+        .named("sun")
+        .colored(step::ORANGE)
+    let sun_node = if y_up {
+        sun_node
+    } else {
+        sun_node.turned_x(90.0)
+    }
+
+    // Planets.
+    let planet_outline = gear_outline(cfg.gear_module, cfg.pressure_angle, cfg.planet.num_teeth, cfg.resolution)
+    let planet_holes = gear_holes(cfg, cfg.planet)
+    let planet_max_rot = step::tan(deg2rad(cfg.helix_angle_deg)) * (cfg.gear_length / 2.0) / cfg.planet.outer_radius
+    let mut planet_nodes: Vec<step::SceneNode> = #[]
+    let mut j = 0
+    while j < cfg.planets.len() {
+        let p = cfg.planets[j]
+        let node = make_gear_shape(planet_outline, planet_holes, cfg.gear_length, cfg.num_elbows, planet_max_rot, cfg.planet_direction, true, false)
+            .named(f"planet-{j}")
+            .colored(step::BLUE)
+        // The Lua rotates about +Y as (x,z) -> (x cos t - z sin t, x sin t + z cos t),
+        // which is the CAD rotate_y by -t. Under the global Rx(90) above that
+        // becomes Rz(-t)*Rx(90), and the placement (x, 0, z) becomes (x, -z, 0).
+        let placed = if y_up {
+            node.turned_y(-p.phi_deg).moved(p.x, 0.0, p.z)
+        } else {
+            node.turned_x(90.0).turned_z(-p.phi_deg).moved(p.x, -p.z, 0.0)
+        }
+        planet_nodes.push(placed)
+        j += 1
+    }
+
+    // Ring gear: a smooth outer cylinder with the inward-facing toothed profile
+    // as a through hole. Its twist follows the mating planet at the pitch point.
+    let ring = ring_geometry(cfg)
+    let outer_circle = circle_outline(ring.outer_radius, cfg.resolution * 8, true)
+    let inner_ccw = rotated_reversed(ring.inner, ring.phase)
+    let ring_node = make_gear_shape(outer_circle, #[inner_ccw], cfg.gear_length, cfg.num_elbows, ring.ring_scale * ring.max_helix_mate, cfg.planet_direction, false, true)
+        .named("ring")
+        .colored(step::GREY)
+    let ring_node = if y_up {
+        ring_node
+    } else {
+        ring_node.turned_x(90.0)
+    }
+
+    design = design.add(sun_node)
+    for node in planet_nodes {
+        design = design.add(node)
+    }
+    design.add(ring_node)
+}
+
+/// make_gear_shape builds a single solid by sweeping the gear outline through
+/// `num_elbows + 1` linearly twisted extrusions.
+///
+/// `outline` and `holes` are in the XZ plane. `max_rotation` is the profile
+/// rotation at an elbow vertex (radians); the first cross-section is at
+/// rotation 0 and each following elbow alternates between 0 and max_rotation,
+/// which reproduces the HerringboneGear's zig-zag.
+///
+/// `straight_outline` and `straight_holes` keep the corresponding loop aligned
+/// with the first cross-section. External gears twist their outline and keep
+/// their bore straight; the ring gear twists its toothed hole and keeps the
+/// outer wall straight.
+fn make_gear_shape(outline: Vec<step::V2>, holes: Vec<Vec<step::V2>>, gear_length: f64, num_elbows: i64, max_rotation: f64, direction: f64, straight_holes: bool, straight_outline: bool) -> step::Shape {
+    let path = gear_sweep_path(gear_length, num_elbows, max_rotation, direction)
+    let mut hole_profiles: Vec<Vec<step::Vec3>> = #[]
+    for hole in holes {
+        hole_profiles.push(profile_points(hole))
+    }
+    let profile = step::sweep_profile(profile_points(outline), holes: hole_profiles, normal_dir: (0.0, 0.0, 1.0), right_dir: (1.0, 0.0, 0.0))
+    step::sweep(path, profile, straight_holes: straight_holes, straight_outline: straight_outline)
+}
+
+/// gear_sweep_path returns the zig-zag cross-section path through the gear
+/// length. Each of the `num_elbows + 1` chunks twists linearly from its start
+/// rotation to its end rotation.
+///
+/// A chunk is subdivided into enough steps that each ring of swept side faces
+/// spans at most `max_sweep_step_deg` of profile rotation. A ring of planar
+/// quads approximates the twisted (helical) surface; when a single quad spans
+/// a large rotation its corners are far from coplanar and the face folds
+/// through itself. That is harmless for typical gears (one step at module 3),
+/// but a small module with a long gear twists hundreds of degrees per chunk -
+/// module 0.5 with gearLength 30 rotates 141.8 deg per elbow - and needs
+/// subdivision to stay valid.
+fn gear_sweep_path(gear_length: f64, num_elbows: i64, max_rotation: f64, direction: f64) -> step::SweepPath {
+    let chunks = num_elbows + 1
+    let max_step = MAX_SWEEP_STEP_DEG * DEG
+    let steps = if max_rotation <= max_step {
+        1
+    } else {
+        let n = math::ceil(max_rotation / max_step) as i64
+        if n < 1 {
+            1
+        } else {
+            n
+        }
+    }
+    let total = chunks * steps
+    let mut points: Vec<step::Vec3> = #[]
+    let mut normals: Vec<step::Vec3> = #[]
+    let mut tangents: Vec<step::Vec3> = #[]
+    for i in 0..(total + 1) {
+        let y = gear_length * i as f64 / total as f64
+        let chunk = if i == total { chunks - 1 } else { i / steps }
+        let within = if i == total {
+            1.0
+        } else {
+            (i % steps) as f64 / steps as f64
+        }
+        let start_rotation = if chunk % 2 == 0 { 0.0 } else { max_rotation }
+        let end_rotation = if chunk % 2 == 0 { max_rotation } else { 0.0 }
+        let helix_rotation = start_rotation + (end_rotation - start_rotation) * within
+        let angle = -direction * helix_rotation
+        points.push((0.0, y, 0.0))
+        normals.push((math::cos(angle), 0.0, math::sin(angle)))
+        tangents.push((0.0, 1.0, 0.0))
+    }
+    step::SweepPath { points: points, normals: normals, tangents: tangents }
+}
+
+/// profile_points converts XZ-plane points into the sweep profile frame.
+///
+/// With `normal_dir=(0,0,1)` and `right_dir=(1,0,0)`, a profile point
+/// (x, y, 0) maps to `x*right + y*normal`, so passing (-z, x, 0) makes the
+/// swept cross-section equal to `rotate_xz((x, z), angle)`.
+fn profile_points(pts: Vec<step::V2>) -> Vec<step::Vec3> {
+    let mut out: Vec<step::Vec3> = #[]
+    for pt in pts {
+        out.push((-pt.1, pt.0, 0.0))
+    }
+    out
+}
+
+/// Map each point through `rotate_xz` and reverse the loop order.
+fn rotated_reversed(pts: Vec<step::V2>, phase: f64) -> Vec<step::V2> {
+    let mut out: Vec<step::V2> = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(rotate_xz(pts[i], phase))
+        i -= 1
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Gear outlines
+// ---------------------------------------------------------------------------
+
+/// gear_outline returns the complete external-gear boundary in the XZ plane,
+/// clockwise, exactly as the HerringboneGear node builds its tooth faces:
+/// involute flanks, tip arc, mirrored flank, and the root arc to the next
+/// tooth.
+fn gear_outline(gear_module: f64, pressure_angle_deg: f64, num_teeth: i64, resolution: i64) -> Vec<step::V2> {
+    let pa = deg2rad(pressure_angle_deg)
+    let n = num_teeth as f64
+    let pitch_radius = gear_module * n / 2.0
+    let base_radius = pitch_radius * math::cos(pa)
+    let root_radius = pitch_radius - 1.25 * gear_module
+    let outer_radius = pitch_radius + gear_module
+
+    // Angular extent of the tooth on the base radius.
+    let backlash = 0.25 * math::PI * math::cos(pa) / (n * gear_module)
+    let pitch_point = involute_xz(base_radius, involute_theta(base_radius, pitch_radius))
+    let face_angle = step::atan2(pitch_point.1, pitch_point.0)
+    let backlash_angle = backlash / (2.0 * pitch_radius)
+    let center_angle = math::PI / (2.0 * n) + face_angle - backlash_angle
+
+    // Angles over which the involute is used.
+    let start_angle = involute_theta(base_radius, if root_radius > base_radius { root_radius } else { base_radius })
+    let stop_angle = involute_theta(base_radius, outer_radius)
+    let d_theta = (stop_angle - start_angle) / POINTS_IN_INVOLUTE as f64
+
+    let mut inv: Vec<step::V2> = #[]
+    if root_radius < base_radius {
+        inv.push(rotate_xz((root_radius, 0.0), -center_angle))
+    }
+    let mut angle = start_angle
+    for _i in 0..(POINTS_IN_INVOLUTE + 1) {
+        inv.push(rotate_xz(involute_xz(base_radius, angle), -center_angle))
+        angle = angle + d_theta
+    }
+    let num_facets = inv.len() as i64
+
+    // Arc across the outer tooth edge.
+    let arc_tip = inv[num_facets - 1]
+    let arc_tip_angle = math::abs(step::atan2(arc_tip.1, arc_tip.0))
+    for i in 1..resolution {
+        let phi = -arc_tip_angle + 2.0 * arc_tip_angle * i as f64 / resolution as f64
+        inv.push(rotate_xz((outer_radius, 0.0), phi))
+    }
+
+    // Upper tooth face (mirror the lower points across the X axis).
+    for i in 1..(num_facets + 1) {
+        let pt = inv[num_facets - i]
+        inv.push((pt.0, -pt.1))
+    }
+
+    // Gap between adjacent teeth.
+    let first_angle = step::atan2(inv[0].1, inv[0].0)
+    let last_angle = step::atan2(inv[inv.len() - 1].1, inv[inv.len() - 1].0)
+    let involute_arc_angle = math::abs(last_angle - first_angle)
+    let gap_arc_angle = TWO_PI / n - involute_arc_angle
+    let gap_delta = gap_arc_angle / resolution as f64
+
+    // Walk clockwise: each tooth from its upper flange to its lower root, then
+    // the root arc on to the next tooth. The Blackjack mesh emits the same faces
+    // tooth by tooth; here they form one closed outline.
+    let mut outline: Vec<step::V2> = #[]
+    let num_inv = inv.len() as i64
+    for i in 0..num_teeth {
+        let theta = -(i as f64) * TWO_PI / n
+        for k in 0..num_inv {
+            outline.push(rotate_xz(inv[num_inv - 1 - k], theta))
+        }
+        let lower_root = rotate_xz(inv[0], theta)
+        for jj in 1..resolution {
+            outline.push(rotate_xz(lower_root, -(jj as f64) * gap_delta))
+        }
+    }
+    clean_polygon(outline, 1.0e-4)
+}
+
+/// external_gear_boundary returns the complete clockwise outer boundary of an
+/// external involute gear. Unlike gear_outline it does not add the tip arc,
+/// matching the helper used for the internal (ring) gear envelope.
+fn external_gear_boundary(gear_module: f64, pressure_angle_deg: f64, num_teeth: i64, root_radius: f64, outer_radius: f64, resolution: i64) -> Vec<step::V2> {
+    let pa = deg2rad(pressure_angle_deg)
+    let n = num_teeth as f64
+    let pitch_radius = gear_module * n / 2.0
+    let base_radius = pitch_radius * math::cos(pa)
+    let face_angle = step::tan(pa) - pa
+    let backlash = 0.25 * math::PI * math::cos(pa) / (n * gear_module)
+    let backlash_angle = backlash / (2.0 * pitch_radius)
+    let center_angle = math::PI / (2.0 * n) + face_angle - backlash_angle
+
+    let start_angle = involute_theta(base_radius, if root_radius > base_radius { root_radius } else { base_radius })
+    let stop_angle = involute_theta(base_radius, outer_radius)
+    let d_theta = (stop_angle - start_angle) / POINTS_IN_INVOLUTE as f64
+
+    let mut inv: Vec<step::V2> = #[]
+    if root_radius < base_radius {
+        inv.push(rotate_xz((root_radius, 0.0), -center_angle))
+    }
+    let mut angle = start_angle
+    for _i in 0..(POINTS_IN_INVOLUTE + 1) {
+        inv.push(rotate_xz(involute_xz(base_radius, angle), -center_angle))
+        angle = angle + d_theta
+    }
+    let num_facets = inv.len() as i64
+
+    // Arc across the outer tooth edge.
+    let arc_tip = inv[num_facets - 1]
+    let arc_tip_angle = math::abs(step::atan2(arc_tip.1, arc_tip.0))
+    for i in 1..resolution {
+        let phi = -arc_tip_angle + 2.0 * arc_tip_angle * i as f64 / resolution as f64
+        inv.push(rotate_xz((outer_radius, 0.0), phi))
+    }
+
+    // Mirror the tooth (num_facets covers only the root + lower flank, as in the
+    // Lua node, so the mirrored flank starts at the tip of the lower involute).
+    for i in 1..(num_facets + 1) {
+        let pt = inv[num_facets - i]
+        inv.push((pt.0, -pt.1))
+    }
+
+    let first_angle = step::atan2(inv[0].1, inv[0].0)
+    let last_angle = step::atan2(inv[inv.len() - 1].1, inv[inv.len() - 1].0)
+    let involute_arc_angle = math::abs(last_angle - first_angle)
+    let gap_arc_angle = TWO_PI / n - involute_arc_angle
+    let gap_delta = gap_arc_angle / resolution as f64
+
+    let mut profile: Vec<step::V2> = #[]
+    let num_inv = inv.len() as i64
+    for tooth in 0..num_teeth {
+        let tooth_angle = -TWO_PI * tooth as f64 / n
+        // Walk clockwise: upper root through the tip to the lower root.
+        for k in 1..(num_inv + 1) {
+            profile.push(rotate_xz(inv[num_inv - k], tooth_angle))
+        }
+        let lower_root = rotate_xz(inv[0], tooth_angle)
+        for jj in 1..resolution {
+            profile.push(rotate_xz(lower_root, -(jj as f64) * gap_delta))
+        }
+    }
+    profile
+}
+
+/// ring_geometry builds the ring's inner boundary as the outer boundary of a
+/// phantom external gear with the ring tooth count. For an internal gear the
+/// addendum and dedendum are reversed, so the phantom's root radius is the
+/// ring tooth tip and its tip radius is the ring notch.
+fn ring_geometry(cfg: GearboxConfig) -> RingGeometry {
+    let gear_module = cfg.gear_module
+    let n = cfg.ring_teeth as f64
+    let ring_pitch = gear_module * n / 2.0
+    let mate_pitch = gear_module * cfg.planet.num_teeth as f64 / 2.0
+    let mate_outer = mate_pitch + gear_module
+
+    // Compensate for an increased ring/planet center distance.
+    let nominal_center = ring_pitch - mate_pitch
+    let center = if cfg.center_distance <= 0.0 {
+        nominal_center
+    } else {
+        cfg.center_distance
+    }
+    let center_delta = if center > nominal_center {
+        center - nominal_center
+    } else {
+        0.0
+    }
+
+    // Internal gear addendum/dedendum: use the standard shortened internal
+    // addendum (tooth tip 1.0*module inside the pitch circle) and root/notch
+    // 1.0*module outside it.
+    let phantom_root = ring_pitch - gear_module
+    let phantom_tip = ring_pitch + gear_module
+    let profile = external_gear_boundary(gear_module, cfg.pressure_angle, cfg.ring_teeth, phantom_root, phantom_tip, cfg.resolution)
+    let profile = clean_polygon(profile, 1.0e-4)
+
+    let mut max_r = 0.0
+    for pt in profile {
+        let r = radius_of(pt)
+        if r > max_r {
+            max_r = r
+        }
+    }
+
+    // Apply the clearance as a smooth radial offset. A radial offset of d
+    // produces a normal flank clearance of d*sin(pressure_angle).
+    let radial_offset = center_delta + cfg.tolerance / math::sin(deg2rad(cfg.pressure_angle))
+    let mut offset_profile: Vec<step::V2> = #[]
+    for pt in profile {
+        let r = radius_of(pt)
+        if r > 0.0 {
+            let s = (r + radial_offset) / r
+            offset_profile.push((pt.0 * s, pt.1 * s))
+        } else {
+            offset_profile.push(pt)
+        }
+    }
+    let inner = clean_polygon(offset_profile, 1.0e-4)
+    let outer_radius = max_r + radial_offset + cfg.outer_thickness
+
+    // Align the phantom's tooth centers with the mating planet's tooth centers
+    // at the ring/planet pitch point.
+    let mate_pitch_angle = TWO_PI / cfg.planet.num_teeth as f64
+    let ring_pitch_angle = TWO_PI / n
+    let mate_rotation = deg2rad(cfg.planets[0].phi_deg)
+    let mut phase = ring_pitch_angle * dmod(mate_rotation / mate_pitch_angle, 1.0)
+    if phase < 0.0 {
+        phase = phase + ring_pitch_angle
+    }
+
+    let max_helix_mate = step::tan(deg2rad(cfg.helix_angle_deg)) * (cfg.gear_length / 2.0) / mate_outer
+    RingGeometry {
+        inner: inner
+        outer_radius: outer_radius
+        phase: phase
+        ring_scale: mate_pitch / ring_pitch
+        max_helix_mate: max_helix_mate
+    }
+}
+
+/// gear_holes returns the central hole outlines for an external gear, wound
+/// counter-clockwise (opposite to the gear outline).
+fn gear_holes(cfg: GearboxConfig, g: GearDims) -> Vec<Vec<step::V2>> {
+    let hole_type = cfg.hole_type
+    if hole_type == "Circular" {
+        return #[circle_outline(cfg.hole_radius, g.num_teeth * cfg.resolution, false)]
+    }
+    if hole_type == "Squared" {
+        return #[polygon_hole(4, cfg.hole_radius)]
+    }
+    if hole_type == "Hexagonal" {
+        return #[polygon_hole(6, cfg.hole_radius)]
+    }
+    if hole_type == "Octagonal" {
+        return #[polygon_hole(8, cfg.hole_radius)]
+    }
+    #[]
+}
+
+/// polygon_hole returns a regular polygon with the given inradius, with its
+/// vertices on the X axis (matching the HerringboneGear hole generators).
+fn polygon_hole(sides: i64, inradius: f64) -> Vec<step::V2> {
+    let circumradius = inradius / math::cos(math::PI / sides as f64)
+    let mut pts: Vec<step::V2> = #[]
+    for i in 0..sides {
+        let a = TWO_PI * i as f64 / sides as f64
+        pts.push((circumradius * math::cos(a), circumradius * math::sin(a)))
+    }
+    pts
+}
+
+fn circle_outline(radius: f64, segments: i64, clockwise: bool) -> Vec<step::V2> {
+    let n = if segments < 3 { 3 } else { segments }
+    let mut pts: Vec<step::V2> = #[]
+    for i in 0..n {
+        let a = TWO_PI * i as f64 / n as f64
+        let angle = if clockwise { -a } else { a }
+        pts.push((radius * math::cos(angle), radius * math::sin(angle)))
+    }
+    pts
+}
+
+// ---------------------------------------------------------------------------
+// Geometry helpers
+// ---------------------------------------------------------------------------
+
+fn deg2rad(degrees: f64) -> f64 {
+    degrees * DEG
+}
+
+fn clamp(value: f64, lo: f64, hi: f64) -> f64 {
+    if value < lo {
+        lo
+    } else if value > hi {
+        hi
+    } else {
+        value
+    }
+}
+
+fn frac(x: f64) -> f64 {
+    x - math::floor(x)
+}
+
+fn dmod(a: f64, b: f64) -> f64 {
+    a - b * math::floor(a / b)
+}
+
+fn norm_angle(a: f64) -> f64 {
+    let mut angle = dmod(a, TWO_PI)
+    if angle < 0.0 {
+        angle = angle + TWO_PI
+    }
+    angle
+}
+
+fn radius_of(pt: step::V2) -> f64 {
+    math::sqrt(pt.0 * pt.0 + pt.1 * pt.1)
+}
+
+fn sq_dist(a: step::V2, b: step::V2) -> f64 {
+    let dx = a.0 - b.0
+    let dz = a.1 - b.1
+    dx * dx + dz * dz
+}
+
+/// rotate_xz rotates a point in the XZ plane by `theta`, matching the Lua
+/// node's rotate_point.
+fn rotate_xz(pt: step::V2, theta: f64) -> step::V2 {
+    let c = math::cos(theta)
+    let s = math::sin(theta)
+    (c * pt.0 - s * pt.1, s * pt.0 + c * pt.1)
+}
+
+fn involute_xz(radius: f64, theta: f64) -> step::V2 {
+    let c = math::cos(theta)
+    let s = math::sin(theta)
+    (radius * (c + theta * s), radius * (s - theta * c))
+}
+
+fn involute_theta(radius: f64, distance: f64) -> f64 {
+    let x = distance / radius
+    math::sqrt(x * x - 1.0)
+}
+
+/// clean_polygon removes consecutive and seam points closer than eps
+/// (squared distance eps2), preventing degenerate STEP faces.
+fn clean_polygon(pts: Vec<step::V2>, eps2: f64) -> Vec<step::V2> {
+    let mut out: Vec<step::V2> = #[]
+    for pt in pts {
+        let keep = out.len() == 0 || sq_dist(out[out.len() - 1], pt) > eps2
+        if keep {
+            out.push(pt)
+        }
+    }
+    while out.len() > 1 && sq_dist(out[0], out[out.len() - 1]) <= eps2 {
+        let _ = out.pop()
+    }
+    out
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

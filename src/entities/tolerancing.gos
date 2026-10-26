@@ -1,0 +1,112 @@
+//! STEP entity models: tolerancing family.
+//!
+//! Ported 1:1 from the reference implementation; the
+//! serialization (including spacing quirks) is the contract.
+
+use crate::entity::Entity
+use crate::fmt::{step_str}
+use crate::ids::{Ref}
+
+fn step_str_or_dollar(s: String) -> String {
+    if s == "$" { "$" } else { step_str(s) }
+}
+
+fn bool_to_step(b: bool) -> String {
+    if b { ".T." } else { ".F." }
+}
+
+// Represents a DATUM_FEATURE entity.
+// Example:
+//   #10=DATUM_FEATURE('name', 'description', #20, .T.)
+// where #20 is a PRODUCT_DEFINITION_SHAPE.
+pub struct DatumFeature {
+    pub name: String
+    pub description: String
+    pub of_shape: Ref
+    pub product_definitional: String // .T., .F., .U.
+}
+
+impl DatumFeature {
+    pub fn new(name: String, description: String, of_shape: Ref, product_definitional: String) -> DatumFeature {
+        DatumFeature { name: name, description: description, of_shape: of_shape, product_definitional: product_definitional }
+    }
+}
+
+impl Entity for DatumFeature {
+    fn to_step(self) -> String {
+        let shape_str = f"#{self.of_shape.id.value}"
+        f"DATUM_FEATURE({step_str(self.name)},{step_str(self.description)},{shape_str},{self.product_definitional})"
+    }
+}
+
+// Represents a DATUM entity.
+// Example:
+//   #10=DATUM('name', 'description', #20, .T., 'A');
+// where #20 is a PRODUCT_DEFINITION_SHAPE.
+pub struct Datum {
+    pub name: String
+    pub description: String
+    pub of_shape: Ref
+    pub product_definitional: String // .T., .F., .U.
+    pub identification: String
+}
+
+impl Datum {
+    pub fn new(name: String, description: String, of_shape: Ref, product_definitional: String, identification: String) -> Datum {
+        Datum { name: name, description: description, of_shape: of_shape, product_definitional: product_definitional, identification: identification }
+    }
+}
+
+impl Entity for Datum {
+    fn to_step(self) -> String {
+        let shape_str = f"#{self.of_shape.id.value}"
+        f"DATUM({step_str(self.name)},{step_str(self.description)},{shape_str},{self.product_definitional},{step_str(self.identification)})"
+    }
+}
+
+// Represents a DIMENSIONAL_SIZE entity.
+// Example:
+//   #10=DIMENSIONAL_SIZE(#20, 'name');
+// where #20 is a SHAPE_ASPECT.
+pub struct DimensionalSize {
+    pub applies_to: Ref
+    pub name: String
+}
+
+impl DimensionalSize {
+    pub fn new(applies_to: Ref, name: String) -> DimensionalSize {
+        DimensionalSize { applies_to: applies_to, name: name }
+    }
+}
+
+impl Entity for DimensionalSize {
+    fn to_step(self) -> String {
+        let applies_to_str = f"#{self.applies_to.id.value}"
+        f"DIMENSIONAL_SIZE({applies_to_str},{step_str(self.name)})"
+    }
+}
+
+// Represents a GEOMETRIC_TOLERANCE entity.
+// Example:
+//   GEOMETRIC_TOLERANCE('name', 'description', #10, #20)
+// where #10 is a MEASURE_WITH_UNIT and #20 is a SHAPE_ASPECT.
+pub struct GeometricTolerance {
+    pub name: String
+    pub description: String
+    pub magnitude: Ref
+    pub toleranced_shape_aspect: Ref
+}
+
+impl GeometricTolerance {
+    pub fn new(name: String, description: String, magnitude: Ref, toleranced_shape_aspect: Ref) -> GeometricTolerance {
+        GeometricTolerance { name: name, description: description, magnitude: magnitude, toleranced_shape_aspect: toleranced_shape_aspect }
+    }
+}
+
+impl Entity for GeometricTolerance {
+    fn to_step(self) -> String {
+        let mag_str = f"#{self.magnitude.id.value}"
+        let shape_str = f"#{self.toleranced_shape_aspect.id.value}"
+        f"GEOMETRIC_TOLERANCE({step_str(self.name)},{step_str(self.description)},{mag_str},{shape_str})"
+    }
+}

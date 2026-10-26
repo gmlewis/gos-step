@@ -1,0 +1,145 @@
+//! 33-filament-runout-sensor-housing
+//!
+//! A housing generator with controlled clearances for switches and fasteners.
+//! Demonstrates complex assemblies, rounded profiles, and face-based engraving.
+//!
+//! Usage (stdout):
+//!   ./run-example.sh 33 > housing.step
+//!
+//! Usage (write file):
+//!   ./run-example.sh 33 -o housing.step
+
+use std::env
+use std::math
+use std::process
+
+use step
+use step::Face::{Front}
+
+fn reverse(pts: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "bodyLength": step::opt_double(45.0, help: "Housing body length (mm)", min: Some(0.0), min_exclusive: true)
+        "bodyWidth": step::opt_double(30.0, help: "Housing body width (mm)", min: Some(0.0), min_exclusive: true)
+        "bodyHeight": step::opt_double(18.0, help: "Housing body height (mm)", min: Some(0.0), min_exclusive: true)
+        "wallThickness": step::opt_double(3.0, help: "Wall thickness (mm)", min: Some(0.0), min_exclusive: true)
+        "filamentDia": step::opt_double(1.75, help: "Filament diameter (mm)", min: Some(0.0), min_exclusive: true)
+        "filamentClearance": step::opt_double(0.6, help: "Clearance around filament (mm)", min: Some(0.0))
+        "switchWidth": step::opt_double(20.0, help: "Microswitch width (mm)", min: Some(0.0), min_exclusive: true)
+        "switchLength": step::opt_double(10.0, help: "Microswitch length (mm)", min: Some(0.0), min_exclusive: true)
+        "switchHeight": step::opt_double(6.0, help: "Microswitch height (mm)", min: Some(0.0), min_exclusive: true)
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "33-filament-runout-sensor-housing"
+        "Generate a filament runout sensor housing."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let body_l = args.double_or("bodyLength", 45.0)
+    let body_w = args.double_or("bodyWidth", 30.0)
+    let body_h = args.double_or("bodyHeight", 18.0)
+    let wall = args.double_or("wallThickness", 3.0)
+    let fil_path_dia = args.double_or("filamentDia", 1.75) + args.double_or("filamentClearance", 0.6)
+    let sw_w = args.double_or("switchWidth", 20.0)
+    let sw_l = args.double_or("switchLength", 10.0)
+    let sw_h = args.double_or("switchHeight", 6.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    // 1. Main Housing Body (Side-view extrusion to include filament bore)
+    let body_radius = 4.0
+    let n = 8
+    let mut side_pts: Vec<(f64, f64)> = #[]
+    // Bottom-right arc
+    for p in step::arc(2.0 * body_radius, 1.5 * math::PI, 2.0 * math::PI, n) {
+        side_pts.push((p.0 + body_l - body_radius, p.1 + body_radius))
+    }
+    // Top-right arc
+    for p in step::arc(2.0 * body_radius, 0.0, 0.5 * math::PI, n) {
+        side_pts.push((p.0 + body_l - body_radius, p.1 + body_h - body_radius))
+    }
+    // Top-left arc
+    for p in step::arc(2.0 * body_radius, 0.5 * math::PI, math::PI, n) {
+        side_pts.push((p.0 + body_radius, p.1 + body_h - body_radius))
+    }
+    // Bottom-left corner (SHARP) - this corner touches the mounting bracket
+    side_pts.push((0.0, 0.0))
+    let fil_hole = reverse(step::circle(fil_path_dia))
+    let fil_hole_translated = step::translate_pts(fil_hole, body_l / 2.0, body_h / 2.0)
+    let housing = step::extrude(step::profile(side_pts).add_hole(fil_hole_translated), body_w)
+        .named("housing")
+        .colored(step::rgb(0.6, 0.2, 0.8)) // Vibrant Purple
+        .turned_x(90.0)
+        .moved(tx - body_l / 2.0, ty + body_w / 2.0, tz)
+
+    // 2. Mounting Flange
+    let flange_w = body_w + 15.0
+    let flange_l = 12.0
+    let flange_outer = step::rounded_rect(flange_l, flange_w, 3.0)
+    let m_hole = reverse(step::circle(4.0))
+    let flange_holes = #[
+        step::translate_pts(m_hole, flange_l / 2.0, 5.0)
+        step::translate_pts(m_hole, flange_l / 2.0, flange_w - 5.0)
+    ]
+    let flange = step::extrude(step::profile(flange_outer).add_all_holes(flange_holes), wall)
+        .named("flange")
+        .colored(step::rgb(0.4, 0.1, 0.6)) // Darker Purple
+        .turned_y(-90.0)
+        .moved(tx - body_l / 2.0, ty - flange_w / 2.0, tz)
+
+    // 3. The Microswitch (Placeholder)
+    let switch_node = step::cuboid(sw_w, sw_l, sw_h)
+        .named("microswitch")
+        .colored(step::MAGENTA)
+        .moved(tx - sw_w / 2.0, ty - sw_l / 2.0, tz + body_h / 2.0 + 1.0)
+
+    // 4. Design and Labels
+    let font = step::load_font("baloo")?
+    let design = step::design(name: "filament-runout-sensor", documentation: args.documentation())
+        .add(housing)
+        .add(flange)
+        .add(switch_node)
+        .add_text_on_face(housing, "FILAMENT", Front, font, font_size: Some(4.0), offset_y: 4.0, rotation: 180.0)
+        .add_text_on_face(housing, "SENSOR", Front, font, font_size: Some(4.0), offset_y: -4.0, rotation: 180.0)
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(_) => design.write_blender_python(bpy_path)?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

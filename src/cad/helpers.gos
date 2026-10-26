@@ -1,0 +1,162 @@
+//! Topology helpers that build oriented faces, loops, and edges.
+
+use crate::cad::context::StepContext
+use crate::cad::geometry::{
+    Vec3, cycle_area_3d, reverse_cycle, v_dot, v_norm, v_sub
+}
+use crate::entities::geometry::Plane
+use crate::ids::Ref
+use crate::repository::any_entity_plane
+
+/// An edge between two corner indexes with its STEP reference.
+pub struct EdgeInfo {
+    pub start: i64
+    pub end: i64
+    pub edge: Ref
+}
+
+fn pair_key(a: i64, b: i64) -> i64 {
+    (a << 32) + b
+}
+
+/// Edges indexed by their endpoint pair, so face loops are O(1) per edge.
+///
+/// The compilers are otherwise quadratic: a face loop used to scan every edge
+/// in the model for each of its segments.
+pub struct EdgeTable {
+    by_pair: Map<i64, (Ref, bool)>
+}
+
+impl EdgeTable {
+    pub fn new(edges: Vec<EdgeInfo>) -> EdgeTable {
+        let mut by_pair: Map<i64, (Ref, bool)> = Map::new()
+        for e in edges {
+            by_pair.insert(pair_key(e.start, e.end), (e.edge, true))
+            by_pair.insert(pair_key(e.end, e.start), (e.edge, false))
+        }
+        EdgeTable { by_pair: by_pair }
+    }
+
+    /// Add one edge in both directions.
+    pub fn insert(&mut self, start: i64, end: i64, edge: Ref) -> () {
+        self.by_pair.insert(pair_key(start, end), (edge, true))
+        self.by_pair.insert(pair_key(end, start), (edge, false))
+    }
+
+    /// Find the edge connecting `a` and `b`, reporting its orientation.
+    pub fn find(&mut self, a: i64, b: i64) -> (Ref, bool) {
+        match self.by_pair.get(pair_key(a, b)) {
+            Some(found) => found
+            None => panic(f"edge not found between points {a} and {b}")
+        }
+    }
+}
+
+/// Build an `EDGE_LOOP` for a vertex cycle.
+pub fn face_loop(ctx: &mut StepContext, table: &mut EdgeTable, verts: Vec<i64>) -> Ref {
+    let mut oe_refs = #[]
+    let n = verts.len()
+    let mut i = 0
+    while i < n {
+        let a = verts[i]
+        let b = verts[(i + 1) % n]
+        let edge_ref, ori = table.find(a, b)
+        oe_refs.push(ctx.oriented_edge(edge_ref, ori))
+        i += 1
+    }
+    ctx.edge_loop(oe_refs)
+}
+
+/// Build an `ADVANCED_FACE` with a single outer bound on a plane.
+pub fn add_plane_face(
+    ctx: &mut StepContext
+    table: &mut EdgeTable
+    verts_cycle: Vec<i64>
+    location_pt: Ref
+    axis_dir: Ref
+    ref_dir: Ref
+    reverse: bool = false
+) -> Ref {
+    let a2p_ref = ctx.axis2_placement_3d(location_pt, axis_dir, ref_dir)
+    let plane = Plane::new("", a2p_ref)
+    let plane_ref = ctx.add(any_entity_plane(plane))
+    let loop_ref = face_loop(ctx, table, verts_cycle)
+    let fob_ref = ctx.face_outer_bound(loop_ref, true)
+    ctx.advanced_face(#[fob_ref], plane_ref, !reverse)
+}
+
+/// Build a plane face whose cycle is oriented so its area points outward.
+pub fn add_plane_face_oriented(
+    ctx: &mut StepContext
+    table: &mut EdgeTable
+    pts: Vec<Vec3>
+    cp_refs: Vec<Ref>
+    verts_cycle: Vec<i64>
+    expected_out: Vec3
+    reverse: bool = false
+) -> Ref {
+    let area_vec = cycle_area_3d(pts, verts_cycle)
+    let cycle = if v_dot(area_vec, expected_out) < 0.0 {
+        reverse_cycle(verts_cycle)
+    } else {
+        verts_cycle
+    }
+    let b0 = cycle[0]
+    let axis_raw = v_norm(expected_out)
+    let refd_raw = v_norm(v_sub(pts[cycle[1]], pts[cycle[0]]))
+    let axis_ref = ctx.direction(axis_raw.0, axis_raw.1, axis_raw.2)
+    let ref_ref = ctx.direction(refd_raw.0, refd_raw.1, refd_raw.2)
+    add_plane_face(ctx, table, cycle, cp_refs[b0], axis_ref, ref_ref, reverse)
+}
+
+/// Build a plane face with holes, all oriented consistently.
+pub fn add_plane_face_with_holes_oriented(
+    ctx: &mut StepContext
+    table: &mut EdgeTable
+    pts: Vec<Vec3>
+    cp_refs: Vec<Ref>
+    outer_cycle_in: Vec<i64>
+    hole_cycles_in: Vec<Vec<i64>>
+    expected_out: Vec3
+    reverse: bool = false
+) -> Ref {
+    let area_vec = cycle_area_3d(pts, outer_cycle_in)
+    let outer_cycle = if v_dot(area_vec, expected_out) < 0.0 {
+        reverse_cycle(outer_cycle_in)
+    } else {
+        outer_cycle_in
+    }
+    // Use the oriented outer loop's area vector: after reversal it always
+    // points along `expected_out`, keeping hole orientation consistent.
+    let outer_area = v_dot(cycle_area_3d(pts, outer_cycle), expected_out)
+
+    let mut hole_cycles = #[]
+    for hc in hole_cycles_in {
+        let ha_vec = cycle_area_3d(pts, hc)
+        if v_dot(ha_vec, expected_out) * outer_area > 0.0 {
+            hole_cycles.push(reverse_cycle(hc))
+        } else {
+            hole_cycles.push(hc)
+        }
+    }
+
+    let b0 = outer_cycle[0]
+    let axis_raw = v_norm(expected_out)
+    let refd_raw = v_norm(v_sub(pts[outer_cycle[1]], pts[outer_cycle[0]]))
+    let axis_ref = ctx.direction(axis_raw.0, axis_raw.1, axis_raw.2)
+    let ref_ref = ctx.direction(refd_raw.0, refd_raw.1, refd_raw.2)
+
+    let a2p_ref = ctx.axis2_placement_3d(cp_refs[b0], axis_ref, ref_ref)
+    let plane = Plane::new("", a2p_ref)
+    let plane_ref = ctx.add(any_entity_plane(plane))
+
+    let outer_loop_ref = face_loop(ctx, table, outer_cycle)
+    let fob_ref = ctx.face_outer_bound(outer_loop_ref, true)
+
+    let mut bounds = #[fob_ref]
+    for loop_pts in hole_cycles {
+        let loop_ref = face_loop(ctx, table, loop_pts)
+        bounds.push(ctx.face_bound(loop_ref, true))
+    }
+    ctx.advanced_face(bounds, plane_ref, !reverse)
+}

@@ -1,0 +1,324 @@
+//! Bounding boxes, Bézier sampling, flattening to polygons, and fitting.
+//!
+//! Unlike the stored (conservative) glyph bounding boxes, `Path::bounding_box`
+//! solves for the true extrema of each cubic segment: the reference
+//! `segment_extents` algebra is reproduced operation for operation so the
+//! results match bit for bit.
+//!
+//! `Path::to_polygon` samples each curved segment at `curve_segments` evenly
+//! spaced parameters, *including* both endpoints, then removes consecutive
+//! duplicates and drops the closing point. Straight segments contribute only
+//! their start point, so the following segment supplies the shared endpoint.
+
+use std::math
+
+use crate::font::draw::{CompoundPath, Graphic, Group, Path}
+use crate::font::layout::Alignment
+use crate::font::model::{BBox, Vec2}
+
+/// Construct a bounding box from four coordinates.
+pub fn bbox(minx: f64, miny: f64, maxx: f64, maxy: f64) -> BBox {
+    BBox::new(Vec2::new(minx, miny), Vec2::new(maxx, maxy))
+}
+
+/// Evaluate a cubic Bézier at parameter `t`:
+/// `P(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3`.
+pub fn cubic_bezier_at(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: f64) -> Vec2 {
+    let u = 1.0 - t
+    let uu = u * u
+    let tt = t * t
+    let uuu = uu * u
+    let ttt = tt * t
+    let ut3 = 3.0 * uu * t
+    let tu3 = 3.0 * u * tt
+    p0.mul_scalar(uuu)
+        .add(p1.mul_scalar(ut3))
+        .add(p2.mul_scalar(tu3))
+        .add(p3.mul_scalar(ttt))
+}
+
+/// Remove points that repeat the previous point within `epsilon`.
+fn dedupe_points(points: Vec<Vec2>, epsilon: f64) -> Vec<Vec2> {
+    if points.len() <= 1 {
+        return points
+    }
+    let eps_sq = epsilon * epsilon
+    let mut result: Vec<Vec2> = #[]
+    let mut i = 0
+    while i < points.len() {
+        if i == 0 || points[i - 1].distance_squared(points[i]) > eps_sq {
+            result.push(points[i])
+        }
+        i += 1
+    }
+    result
+}
+
+/// Axis-aligned extents of one cubic segment, including true extrema.
+///
+/// `h1` and `h2` are the absolute handle positions (anchor + relative handle).
+/// The returned pair is `(lower_left, upper_right)`.
+fn segment_extents(p1: Vec2, h1: Vec2, h2: Vec2, p2: Vec2) -> (Vec2, Vec2) {
+    let mut lower_left = Vec2 {
+        x: math::min(p1.x, p2.x)
+        y: math::min(p1.y, p2.y)
+    }
+    let mut upper_right = Vec2 {
+        x: math::max(p1.x, p2.x)
+        y: math::max(p1.y, p2.y)
+    }
+
+    let d1x = h1.x - p1.x
+    let d1y = h1.y - p1.y
+    let v1x = p1.x - h1.x * 2.0 + h2.x
+    let v1y = p1.y - h1.y * 2.0 + h2.y
+    let v2x = h1.x * 3.0 - h2.x * 3.0 + p2.x - p1.x
+    let v2y = h1.y * 3.0 - h2.y * 3.0 + p2.y - p1.y
+
+    let mut dist1 = v1x * v1x - v2x * d1x
+    let d1_is_zero = d1x == 0.0 && d1y == 0.0
+    if dist1 > 0.0 {
+        dist1 = math::sqrt(dist1)
+        let mut a = if d1_is_zero { (-v1x - dist1) / v2x } else { d1x / (-v1x - dist1) }
+        if a > 0.0 && a < 1.0 {
+            let s = 1.0 - a
+            let l = s * s * s * p1.x +
+                s * s * a * h1.x * 3.0 +
+                s * a * a * h2.x * 3.0 +
+                a * a * a * p2.x
+            lower_left.x = math::min(lower_left.x, l)
+            upper_right.x = math::max(upper_right.x, l)
+        }
+        a = if d1_is_zero { (-v1x + dist1) / v2x } else { d1x / (-v1x + dist1) }
+        if a > 0.0 && a < 1.0 {
+            let s = 1.0 - a
+            let l = s * s * s * p1.x +
+                s * s * a * h1.x * 3.0 +
+                s * a * a * h2.x * 3.0 +
+                a * a * a * p2.x
+            lower_left.x = math::min(lower_left.x, l)
+            upper_right.x = math::max(upper_right.x, l)
+        }
+    }
+
+    let mut dist2 = v1y * v1y - v2y * d1y
+    if dist2 > 0.0 {
+        dist2 = math::sqrt(dist2)
+        let mut s = if d1_is_zero { (-v1y - dist2) / v2y } else { d1y / (-v1y - dist2) }
+        if s > 0.0 && s < 1.0 {
+            let a = 1.0 - s
+            let l = a * a * a * p1.y +
+                a * a * s * h1.y * 3.0 +
+                a * s * s * h2.y * 3.0 +
+                s * s * s * p2.y
+            lower_left.y = math::min(lower_left.y, l)
+            upper_right.y = math::max(upper_right.y, l)
+        }
+        s = if d1_is_zero { (-v1y + dist2) / v2y } else { d1y / (-v1y + dist2) }
+        if s > 0.0 && s < 1.0 {
+            let a = 1.0 - s
+            let l = a * a * a * p1.y +
+                a * a * s * h1.y * 3.0 +
+                a * s * s * h2.y * 3.0 +
+                s * s * s * p2.y
+            lower_left.y = math::min(lower_left.y, l)
+            upper_right.y = math::max(upper_right.y, l)
+        }
+    }
+
+    (lower_left, upper_right)
+}
+
+impl Path {
+    /// True cubic bounding box of this path, or `None` when it has no anchors.
+    pub fn bounding_box(self) -> Option<BBox> {
+        let n = self.anchors.len()
+        if n == 0 {
+            return None
+        }
+        if n == 1 {
+            let point = self.anchors[0].position
+            return Some(BBox::new(point, point))
+        }
+        let mut box = BBox::max_reversed()
+        let mut i = 1
+        while i < n {
+            let last = self.anchors[i - 1]
+            let current = self.anchors[i]
+            let h1 = last.position.add(last.handle_out)
+            let h2 = current.position.add(current.handle_in)
+            let lower_left, upper_right = segment_extents(last.position, h1, h2, current.position)
+            box.expand_point(lower_left)
+            box.expand_point(upper_right)
+            i += 1
+        }
+        if self.closed {
+            let last = self.anchors[n - 1]
+            let current = self.anchors[0]
+            let h1 = last.position.add(last.handle_out)
+            let h2 = current.position.add(current.handle_in)
+            let lower_left, upper_right = segment_extents(last.position, h1, h2, current.position)
+            box.expand_point(lower_left)
+            box.expand_point(upper_right)
+        }
+        Some(box)
+    }
+
+    /// Flatten this closed path into a polygon of points.
+    ///
+    /// Open paths yield an empty list, as do paths with fewer than two
+    /// anchors. Each curved segment contributes `curve_segments` samples,
+    /// endpoint inclusive; `epsilon` (default `1e-9`) controls duplicate
+    /// removal. The closing point is dropped when it repeats the first.
+    pub fn to_polygon(self, curve_segments: i64, epsilon: f64 = 1e-9) -> Vec<Vec2> {
+        if !self.closed {
+            return #[]
+        }
+        let count = self.anchors.len()
+        if count < 2 {
+            return #[]
+        }
+        let mut points: Vec<Vec2> = #[]
+        let mut i = 0
+        while i < count {
+            let a1 = self.anchors[i]
+            let a2 = self.anchors[(i + 1) % count]
+            let p0 = a1.position
+            let p3 = a2.position
+            let p1 = p0.add(a1.handle_out)
+            let p2 = p3.add(a2.handle_in)
+            if a1.handle_out.is_zero() && a2.handle_in.is_zero() || curve_segments <= 1 {
+                points.push(p0)
+            } else {
+                let mut j = 0
+                while j < curve_segments {
+                    let t = (j as f64) / ((curve_segments - 1) as f64)
+                    points.push(cubic_bezier_at(p0, p1, p2, p3, t))
+                    j += 1
+                }
+            }
+            i += 1
+        }
+        let mut poly = dedupe_points(points, epsilon)
+        let eps_sq = epsilon * epsilon
+        if poly.len() > 1 {
+            let last = poly.len() - 1
+            if poly[0].distance_squared(poly[last]) <= eps_sq {
+                let _ = poly.pop()
+            }
+        }
+        poly
+    }
+}
+
+impl CompoundPath {
+    /// Union of the bounding boxes of all contained paths.
+    pub fn bounding_box(self) -> Option<BBox> {
+        let mut result = BBox::max_reversed()
+        for path in self.paths {
+            match path.bounding_box() {
+                None => {}
+                Some(box) => {
+                    result.expand_point(box.min)
+                    result.expand_point(box.max)
+                }
+            }
+        }
+        if result.is_inf() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+}
+
+impl Group {
+    /// Union of the bounding boxes of all items.
+    pub fn bounding_box(self) -> Option<BBox> {
+        let mut box = BBox::max_reversed()
+        for item in self.items {
+            match item.bounding_box() {
+                None => {}
+                Some(item_box) => {
+                    box.expand_point(item_box.min)
+                    box.expand_point(item_box.max)
+                }
+            }
+        }
+        if box.is_inf() {
+            None
+        } else {
+            Some(box)
+        }
+    }
+}
+
+impl Graphic {
+    /// The bounding box of this graphic, or `None` when it is empty.
+    pub fn bounding_box(self) -> Option<BBox> {
+        match self {
+            Graphic::CompoundPath(cp) => cp.bounding_box()
+            Graphic::Group(g) => g.bounding_box()
+            Graphic::Path(p) => p.bounding_box()
+        }
+    }
+
+    /// Flatten every path to a polygon, tagging each with its `clear` flag.
+    ///
+    /// This is the shape the CAD text builder consumes: `(points, clear)`
+    /// where `clear = true` means the polygon is a hole. Polygons with fewer
+    /// than three points are omitted.
+    pub fn to_profiles_tuples(self, curve_segments: i64) -> Vec<(Vec<(f64, f64)>, bool)> {
+        let mut result: Vec<(Vec<(f64, f64)>, bool)> = #[]
+        for path in self.all_paths() {
+            let poly = path.to_polygon(curve_segments)
+            if poly.len() >= 3 {
+                let mut points: Vec<(f64, f64)> = #[]
+                for point in poly {
+                    points.push((point.x, point.y))
+                }
+                result.push((points, path.clear))
+            }
+        }
+        result
+    }
+
+    /// Scale and translate this graphic so it fits inside `box` with its
+    /// aspect ratio preserved, placing it according to `anchor`.
+    pub fn fit_to(self, box: BBox, anchor: Alignment = Alignment::Center) -> Graphic {
+        let bbox = match self.bounding_box() {
+            None => return self
+            Some(b) => b
+        }
+        if bbox.min.x == box.min.x && bbox.min.y == box.min.y && bbox.max.x == box.max.x && bbox.max.y == box.max.y {
+            return self
+        }
+        let wscale = box.width() / bbox.width()
+        let hscale = box.height() / bbox.height()
+        let s = math::min(wscale, hscale)
+        let scaled_width = bbox.width() * s
+        let scaled_height = bbox.height() * s
+        let extra_width = box.width() - scaled_width
+        let extra_height = box.height() - scaled_height
+        let offset_x, offset_y = match anchor {
+            Alignment::Unchanged | Alignment::BottomLeft | Alignment::BaselineLeft => (0.0, 0.0)
+            Alignment::TopLeft => (0.0, extra_height)
+            Alignment::TopCenter => (extra_width / 2.0, extra_height)
+            Alignment::TopRight => (extra_width, extra_height)
+            Alignment::CenterLeft => (0.0, extra_height / 2.0)
+            Alignment::Center => (extra_width / 2.0, extra_height / 2.0)
+            Alignment::CenterRight => (extra_width, extra_height / 2.0)
+            Alignment::BottomCenter | Alignment::BaselineCenter => (extra_width / 2.0, 0.0)
+            Alignment::BottomRight | Alignment::BaselineRight => (extra_width, 0.0)
+            Alignment::RatioXY(rx, ry) => (extra_width * rx, extra_height * ry)
+        }
+        let tx = box.min.x - bbox.min.x * s + offset_x
+        let ty = box.min.y - bbox.min.y * s + offset_y
+        self.transformed(s, s, tx, ty)
+    }
+
+    /// Uniform scale-to-fit; identical to `fit_to`.
+    pub fn scale_to_fit(self, box: BBox, anchor: Alignment = Alignment::Center) -> Graphic {
+        self.fit_to(box, anchor: anchor)
+    }
+}

@@ -1,0 +1,689 @@
+//! The CAD intent model: shapes, scene nodes, profiles, and bounds.
+
+use std::math
+
+use crate::cad::geometry::{Vec2, Vec3, rotate_point}
+
+/// An RGB colour with components in `[0, 1]`.
+pub struct Rgb {
+    pub r: f64
+    pub g: f64
+    pub b: f64
+}
+
+impl Rgb {
+    pub fn new(r: f64, g: f64, b: f64) -> Rgb {
+        Rgb { r: r, g: g, b: b }
+    }
+
+    pub fn orange() -> Rgb {
+        Rgb { r: 1.0, g: 0.6, b: 0.0 }
+    }
+
+    pub fn blue() -> Rgb {
+        Rgb { r: 0.2, g: 0.6, b: 1.0 }
+    }
+
+    pub fn grey() -> Rgb {
+        Rgb { r: 0.2, g: 0.2, b: 0.2 }
+    }
+
+    pub fn purple() -> Rgb {
+        Rgb { r: 0.5, g: 0.0, b: 0.5 }
+    }
+
+    pub fn magenta() -> Rgb {
+        Rgb { r: 1.0, g: 0.0, b: 1.0 }
+    }
+
+    pub fn white() -> Rgb {
+        Rgb { r: 1.0, g: 1.0, b: 1.0 }
+    }
+
+    pub fn black() -> Rgb {
+        Rgb { r: 0.0, g: 0.0, b: 0.0 }
+    }
+
+    pub fn green() -> Rgb {
+        Rgb { r: 0.0, g: 0.8, b: 0.0 }
+    }
+
+    pub fn red() -> Rgb {
+        Rgb { r: 0.8, g: 0.0, b: 0.0 }
+    }
+
+    pub fn cyan() -> Rgb {
+        Rgb { r: 0.0, g: 0.8, b: 0.8 }
+    }
+}
+
+impl Display for Rgb {
+    fn fmt(&self) -> String {
+        f"Rgb({self.r},{self.g},{self.b})"
+    }
+}
+
+/// A 2D profile: an outer loop plus zero or more holes.
+pub struct Profile2D {
+    pub outer: Vec<Vec2>
+    pub holes: Vec<Vec<Vec2>>
+}
+
+/// A rectangular block intent.
+pub struct Cuboid {
+    pub sx: f64
+    pub sy: f64
+    pub sz: f64
+}
+
+/// A chamfered/filleted calibration block intent.
+pub struct CalibrationChamferBlock {
+    pub length_mm: f64
+    pub width_mm: f64
+    pub height_mm: f64
+    pub chamfer_size_mm: f64
+    pub fillet_radius_mm: f64
+    pub fillet_segments: i64
+}
+
+/// An extruded profile intent.
+pub struct ExtrudedProfile {
+    pub profile: Profile2D
+    pub height_mm: f64
+}
+
+/// A swept profile intent.
+pub struct SweptProfile {
+    pub path: SweepPath
+    pub profile: SweepProfile
+    pub make_start_cap: bool
+    pub make_end_cap: bool
+    pub straight_holes: bool
+    pub straight_outline: bool
+}
+
+/// A union of scene nodes.
+pub struct BooleanUnion {
+    pub nodes: Vec<SceneNode>
+}
+
+/// A difference of a base node and cutter nodes.
+pub struct BooleanDifference {
+    pub base: SceneNode
+    pub cutters: Vec<SceneNode>
+}
+
+/// A single anchor in a cubic Bezier path; handles are absolute positions.
+pub struct BezierAnchor {
+    pub position: Vec2
+    pub handle_in: Vec2
+    pub handle_out: Vec2
+}
+
+/// A 2D path made of cubic Bezier segments.
+pub struct BezierPath {
+    pub anchors: Vec<BezierAnchor>
+    pub closed: bool
+    /// True for a hole (cut-out).
+    pub clear: bool
+}
+
+/// An extruded Bezier profile; the first non-clear path is the outer loop.
+pub struct ExtrudedBezierProfile {
+    pub paths: Vec<BezierPath>
+    pub height_mm: f64
+}
+
+/// A shape intent.
+pub enum Shape {
+    Cuboid(Cuboid)
+    CalibrationChamferBlock(CalibrationChamferBlock)
+    ExtrudedProfile(ExtrudedProfile)
+    ExtrudedBezierProfile(ExtrudedBezierProfile)
+    SweptProfile(SweptProfile)
+    Union(BooleanUnion)
+    Difference(BooleanDifference)
+}
+
+/// A shape plus a name, colour, and translation/rotation.
+pub struct SceneNode {
+    pub shape: Shape
+    pub name: String
+    pub color: Rgb
+    pub tx: f64
+    pub ty: f64
+    pub tz: f64
+    /// Rotation X in degrees.
+    pub rx: f64
+    /// Rotation Y in degrees.
+    pub ry: f64
+    /// Rotation Z in degrees.
+    pub rz: f64
+}
+
+/// A named face of a box-like node.
+pub enum Face {
+    Top
+    Bottom
+    Front
+    Back
+    Left
+    Right
+}
+
+/// The sampled path a sweep follows.
+pub struct SweepPath {
+    pub points: Vec<Vec3>
+    pub normals: Vec<Vec3>
+    pub tangents: Vec<Vec3>
+}
+
+/// A 2D profile to sweep along a path.
+pub struct SweepProfile {
+    pub center: Vec3
+    pub vertices: Vec<Vec3>
+    pub holes: Vec<Vec<Vec3>>
+    /// Direction of extrusion.
+    pub normal_dir: Vec3
+    /// The "right" side of the profile when looking along `normal_dir`.
+    pub right_dir: Vec3
+}
+
+impl SweepProfile {
+    pub fn new(
+        vertices: Vec<Vec3>
+        center: Vec3 = (0.0, 0.0, 0.0)
+        holes: Vec<Vec<Vec3>> = #[]
+        normal_dir: Vec3 = (0.0, 1.0, 0.0)
+        right_dir: Vec3 = (1.0, 0.0, 0.0)
+    ) -> SweepProfile {
+        SweepProfile {
+            center: center
+            vertices: vertices
+            holes: holes
+            normal_dir: normal_dir
+            right_dir: right_dir
+        }
+    }
+}
+
+/// A bounding box as `(x0, x1, y0, y1, z0, z1)`.
+pub type Bounds = (f64, f64, f64, f64, f64, f64)
+
+fn bounds_of_points_2d(points: Vec<Vec2>, z1: f64) -> Bounds {
+    let mut x0 = f64::MAX
+    let mut x1 = f64::MIN
+    let mut y0 = f64::MAX
+    let mut y1 = f64::MIN
+    for pt in points {
+        if pt.0 < x0 {
+            x0 = pt.0
+        }
+        if pt.0 > x1 {
+            x1 = pt.0
+        }
+        if pt.1 < y0 {
+            y0 = pt.1
+        }
+        if pt.1 > y1 {
+            y1 = pt.1
+        }
+    }
+    (x0, x1, y0, y1, 0.0, z1)
+}
+
+impl Shape {
+    /// Compatibility alias for `named`.
+    pub fn with_name(self, name: String) -> SceneNode {
+        self.named(name)
+    }
+
+    /// Compatibility alias for `colored`.
+    pub fn with_color(self, color: Rgb) -> SceneNode {
+        self.colored(color)
+    }
+
+    /// The bounding box of a shape intent.
+    pub fn bounding_box(self) -> Bounds {
+        match self {
+            Shape::Cuboid(c) => (0.0, c.sx, 0.0, c.sy, 0.0, c.sz)
+            Shape::CalibrationChamferBlock(b) => {
+                (0.0, b.length_mm, 0.0, b.width_mm, 0.0, b.height_mm)
+            }
+            Shape::ExtrudedProfile(e) => bounds_of_points_2d(e.profile.outer, e.height_mm)
+            Shape::ExtrudedBezierProfile(e) => {
+                let mut pts = #[]
+                for path in e.paths {
+                    for anchor in path.anchors {
+                        pts.push(anchor.position)
+                        pts.push(anchor.handle_in)
+                        pts.push(anchor.handle_out)
+                    }
+                }
+                bounds_of_points_2d(pts, e.height_mm)
+            }
+            Shape::Difference(d) => d.base.shape.bounding_box()
+            Shape::SweptProfile(s) => {
+                let mut x0 = f64::MAX
+                let mut x1 = f64::MIN
+                let mut y0 = f64::MAX
+                let mut y1 = f64::MIN
+                let mut z0 = f64::MAX
+                let mut z1 = f64::MIN
+                for pt in s.path.points {
+                    if pt.0 < x0 {
+                        x0 = pt.0
+                    }
+                    if pt.0 > x1 {
+                        x1 = pt.0
+                    }
+                    if pt.1 < y0 {
+                        y0 = pt.1
+                    }
+                    if pt.1 > y1 {
+                        y1 = pt.1
+                    }
+                    if pt.2 < z0 {
+                        z0 = pt.2
+                    }
+                    if pt.2 > z1 {
+                        z1 = pt.2
+                    }
+                }
+                // Expand by a reasonable amount for the profile.
+                (x0 - 5.0, x1 + 5.0, y0 - 5.0, y1 + 5.0, z0 - 5.0, z1 + 5.0)
+            }
+            Shape::Union(u) => {
+                let mut x0 = f64::MAX
+                let mut x1 = f64::MIN
+                let mut y0 = f64::MAX
+                let mut y1 = f64::MIN
+                let mut z0 = f64::MAX
+                let mut z1 = f64::MIN
+                for child in u.nodes {
+                    let cx0, cx1, cy0, cy1, cz0, cz1 = child.bounding_box()
+                    if cx0 < x0 {
+                        x0 = cx0
+                    }
+                    if cx1 > x1 {
+                        x1 = cx1
+                    }
+                    if cy0 < y0 {
+                        y0 = cy0
+                    }
+                    if cy1 > y1 {
+                        y1 = cy1
+                    }
+                    if cz0 < z0 {
+                        z0 = cz0
+                    }
+                    if cz1 > z1 {
+                        z1 = cz1
+                    }
+                }
+                (x0, x1, y0, y1, z0, z1)
+            }
+        }
+    }
+}
+
+impl SceneNode {
+    /// Compatibility alias for `moved`.
+    pub fn translate(self, x: f64 = 0.0, y: f64 = 0.0, z: f64 = 0.0) -> SceneNode {
+        self.moved(x, y, z)
+    }
+
+    /// Compatibility aliases for the turned-* methods.
+    pub fn rotate_x(self, degrees: f64) -> SceneNode {
+        self.turned_x(degrees)
+    }
+
+    pub fn rotate_y(self, degrees: f64) -> SceneNode {
+        self.turned_y(degrees)
+    }
+
+    pub fn rotate_z(self, degrees: f64) -> SceneNode {
+        self.turned_z(degrees)
+    }
+
+    /// The transformed bounding box of this node.
+    pub fn bounding_box(self) -> Bounds {
+        let lx0, lx1, ly0, ly1, lz0, lz1 = self.shape.bounding_box()
+        let corners = #[
+            (lx0, ly0, lz0)
+            (lx1, ly0, lz0)
+            (lx1, ly1, lz0)
+            (lx0, ly1, lz0)
+            (lx0, ly0, lz1)
+            (lx1, ly0, lz1)
+            (lx1, ly1, lz1)
+            (lx0, ly1, lz1)
+        ]
+        let mut x0 = f64::MAX
+        let mut x1 = f64::MIN
+        let mut y0 = f64::MAX
+        let mut y1 = f64::MIN
+        let mut z0 = f64::MAX
+        let mut z1 = f64::MIN
+        for p in corners {
+            let tx, ty, tz = rotate_point(p, self.rx, self.ry, self.rz)
+            let gx = tx + self.tx
+            let gy = ty + self.ty
+            let gz = tz + self.tz
+            if gx < x0 {
+                x0 = gx
+            }
+            if gx > x1 {
+                x1 = gx
+            }
+            if gy < y0 {
+                y0 = gy
+            }
+            if gy > y1 {
+                y1 = gy
+            }
+            if gz < z0 {
+                z0 = gz
+            }
+            if gz > z1 {
+                z1 = gz
+            }
+        }
+        (x0, x1, y0, y1, z0, z1)
+    }
+}
+
+impl Profile2D {
+    /// A profile with an outer loop and no holes.
+    pub fn new(outer: Vec<Vec2>) -> Profile2D {
+        Profile2D { outer: outer, holes: #[] }
+    }
+
+    /// Add one hole loop.
+    pub fn add_hole(self, hole: Vec<Vec2>) -> Profile2D {
+        let mut holes = self.holes
+        holes.push(hole)
+        Profile2D { holes: holes, ..self }
+    }
+
+    /// Add the same hole loop at several locations (reversed winding).
+    pub fn add_holes_at(self, locs: Vec<Vec2>, hole_profile: Vec<Vec2>) -> Profile2D {
+        let mut holes = self.holes
+        for loc in locs {
+            let lx, ly = loc
+            holes.push(translate_pts_reversed(hole_profile, lx, ly))
+        }
+        Profile2D { holes: holes, ..self }
+    }
+
+    /// Append several hole loops.
+    pub fn add_all_holes(self, extra: Vec<Vec<Vec2>>) -> Profile2D {
+        let mut holes = self.holes
+        for h in extra {
+            holes.push(h)
+        }
+        Profile2D { holes: holes, ..self }
+    }
+
+    /// A rectangle with its lower-left corner at the origin.
+    pub fn rect(width: f64, height: f64) -> Vec<Vec2> {
+        #[(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]
+    }
+
+    /// A rectangle centered on the origin.
+    pub fn centered_rect(width: f64, height: f64) -> Vec<Vec2> {
+        let hw = width / 2.0
+        let hh = height / 2.0
+        #[(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+    }
+
+    /// A rounded rectangle with its lower-left corner at the origin.
+    pub fn rounded_rect(
+        width: f64
+        height: f64
+        radius: f64
+        segments: i64 = 32
+    ) -> Vec<Vec2> {
+        if radius <= 0.0 {
+            return Profile2D::rect(width, height)
+        }
+        let r = if radius > width / 2.0 {
+            width / 2.0
+        } else if radius > height / 2.0 {
+            height / 2.0
+        } else {
+            radius
+        }
+        let n = if segments < 4 { 4 } else { segments }
+        let qn = n / 4
+        let mut pts = #[]
+
+        // Bottom-right arc: 270 to 360 degrees.
+        for p in Profile2D::arc(2.0 * r, 1.5 * math::PI, 2.0 * math::PI, qn) {
+            pts.push((p.0 + width - r, p.1 + r))
+        }
+        // Top-right arc: 0 to 90 degrees.
+        for p in Profile2D::arc(2.0 * r, 0.0, 0.5 * math::PI, qn) {
+            pts.push((p.0 + width - r, p.1 + height - r))
+        }
+        // Top-left arc: 90 to 180 degrees.
+        for p in Profile2D::arc(2.0 * r, 0.5 * math::PI, math::PI, qn) {
+            pts.push((p.0 + r, p.1 + height - r))
+        }
+        // Bottom-left arc: 180 to 270 degrees.
+        for p in Profile2D::arc(2.0 * r, math::PI, 1.5 * math::PI, qn) {
+            pts.push((p.0 + r, p.1 + r))
+        }
+        pts
+    }
+
+    /// A regular polygon with the given side count and diameter.
+    pub fn polygon(sides: i64, diameter: f64, rotation: f64 = 0.0) -> Vec<Vec2> {
+        let n = if sides < 3 { 3 } else { sides }
+        let radius = diameter / 2.0
+        let angle_step = 2.0 * math::PI / n as f64
+        let rotation_rad = rotation * math::PI / 180.0
+        let mut out = #[]
+        let mut i = 0
+        while i < n {
+            let phi = i as f64 * angle_step + rotation_rad
+            out.push((radius * math::cos(phi), radius * math::sin(phi)))
+            i += 1
+        }
+        out
+    }
+
+    /// An ellipse (and circle when width == height).
+    pub fn ellipse(width: f64, height: f64, segments: i64 = 64) -> Vec<Vec2> {
+        let rx = width / 2.0
+        let ry = height / 2.0
+        let n = if segments < 3 { 3 } else { segments }
+        let angle_step = 2.0 * math::PI / n as f64
+        let mut out = #[]
+        let mut i = 0
+        while i < n {
+            let phi = i as f64 * angle_step
+            out.push((rx * math::cos(phi), ry * math::sin(phi)))
+            i += 1
+        }
+        out
+    }
+
+    /// A circle.
+    pub fn circle(diameter: f64, segments: i64 = 64) -> Vec<Vec2> {
+        let radius = diameter / 2.0
+        let n = if segments < 3 { 3 } else { segments }
+        let angle_step = 2.0 * math::PI / n as f64
+        let mut out = #[]
+        let mut i = 0
+        while i < n {
+            let phi = i as f64 * angle_step
+            out.push((radius * math::cos(phi), radius * math::sin(phi)))
+            i += 1
+        }
+        out
+    }
+
+    /// An arc from `start_angle` to `end_angle` (radians), endpoints included.
+    pub fn arc(diameter: f64, start_angle: f64, end_angle: f64, segments: i64 = 32) -> Vec<Vec2> {
+        let radius = diameter / 2.0
+        let n = if segments < 2 { 2 } else { segments }
+        let angle_step = (end_angle - start_angle) / n as f64
+        let mut out = #[]
+        let mut i = 0
+        while i <= n {
+            let phi = start_angle + i as f64 * angle_step
+            out.push((radius * math::cos(phi), radius * math::sin(phi)))
+            i += 1
+        }
+        out
+    }
+}
+
+fn translate_pts(pts: Vec<Vec2>, x: f64, y: f64) -> Vec<Vec2> {
+    let mut out = #[]
+    for p in pts {
+        out.push((p.0 + x, p.1 + y))
+    }
+    out
+}
+
+fn translate_pts_reversed(pts: Vec<Vec2>, x: f64, y: f64) -> Vec<Vec2> {
+    let shifted = translate_pts(pts, x, y)
+    let mut out = #[]
+    let mut i = shifted.len() as i64 - 1
+    while i >= 0 {
+        out.push(shifted[i])
+        i -= 1
+    }
+    out
+}
+
+impl Cuboid {
+    pub fn new(sx: f64, sy: f64, sz: f64) -> Shape {
+        Shape::Cuboid(Cuboid { sx: sx, sy: sy, sz: sz })
+    }
+}
+
+impl CalibrationChamferBlock {
+    pub fn new(
+        length_mm: f64
+        width_mm: f64
+        height_mm: f64
+        chamfer_size_mm: f64 = 1.0
+        fillet_radius_mm: f64 = 0.0
+        fillet_segments: i64 = 8
+    ) -> Shape {
+        Shape::CalibrationChamferBlock(CalibrationChamferBlock {
+            length_mm: length_mm
+            width_mm: width_mm
+            height_mm: height_mm
+            chamfer_size_mm: chamfer_size_mm
+            fillet_radius_mm: fillet_radius_mm
+            fillet_segments: fillet_segments
+        })
+    }
+}
+
+impl ExtrudedProfile {
+    pub fn new(outer: Vec<Vec2>, height_mm: f64, holes: Vec<Vec<Vec2>> = #[]) -> Shape {
+        Shape::ExtrudedProfile(ExtrudedProfile {
+            profile: Profile2D { outer: outer, holes: holes }
+            height_mm: height_mm
+        })
+    }
+}
+
+impl ExtrudedBezierProfile {
+    pub fn new(paths: Vec<BezierPath>, height_mm: f64) -> Shape {
+        Shape::ExtrudedBezierProfile(ExtrudedBezierProfile {
+            paths: paths
+            height_mm: height_mm
+        })
+    }
+}
+
+impl Shape {
+    /// Attach a name and default styling.
+    pub fn named(self, name: String) -> SceneNode {
+        SceneNode {
+            shape: self
+            name: name
+            color: Rgb::orange()
+            tx: 0.0
+            ty: 0.0
+            tz: 0.0
+            rx: 0.0
+            ry: 0.0
+            rz: 0.0
+        }
+    }
+
+    /// Attach a colour (leaving the name `unnamed`).
+    pub fn colored(self, color: Rgb) -> SceneNode {
+        self.named("unnamed").colored(color)
+    }
+}
+
+impl SceneNode {
+    pub fn named(self, name: String) -> SceneNode {
+        SceneNode { name: name, ..self }
+    }
+
+    pub fn colored(self, color: Rgb) -> SceneNode {
+        SceneNode { color: color, ..self }
+    }
+
+    /// Translate relative to the node's current offset.
+    pub fn moved(self, x: f64 = 0.0, y: f64 = 0.0, z: f64 = 0.0) -> SceneNode {
+        SceneNode {
+            tx: self.tx + x
+            ty: self.ty + y
+            tz: self.tz + z
+            ..self
+        }
+    }
+
+    pub fn turned_x(self, degrees: f64) -> SceneNode {
+        SceneNode { rx: self.rx + degrees, ..self }
+    }
+
+    pub fn turned_y(self, degrees: f64) -> SceneNode {
+        SceneNode { ry: self.ry + degrees, ..self }
+    }
+
+    pub fn turned_z(self, degrees: f64) -> SceneNode {
+        SceneNode { rz: self.rz + degrees, ..self }
+    }
+
+    /// Repeat this node at each location.
+    pub fn repeat_at(self, locs: Vec<Vec3>) -> Vec<SceneNode> {
+        let mut out = #[]
+        for loc in locs {
+            let lx, ly, lz = loc
+            out.push(self.moved(lx, ly, lz))
+        }
+        out
+    }
+}
+
+impl SweptProfile {
+    /// Create a swept-profile shape.
+    pub fn new(
+        path: SweepPath
+        profile: SweepProfile
+        make_start_cap: bool = true
+        make_end_cap: bool = true
+        straight_holes: bool = false
+        straight_outline: bool = true
+    ) -> Shape {
+        Shape::SweptProfile(SweptProfile {
+            path: path
+            profile: profile
+            make_start_cap: make_start_cap
+            make_end_cap: make_end_cap
+            straight_holes: straight_holes
+            straight_outline: straight_outline
+        })
+    }
+}

@@ -1,0 +1,232 @@
+//! SVG path parsing and translation for absolute `M`, `L`, `C`, `Q`, `Z`.
+//!
+//! Font glyph paths only ever use absolute commands, so this module implements
+//! exactly that subset. It replaces the reference implementation's regex
+//! scanners with explicit character scanners; the accepted grammar and the
+//! emitted text are unchanged:
+//!
+//! * a command is one of `M L C Q Z`;
+//! * parameters are separated by whitespace and/or commas;
+//! * a number may be signed, may contain one decimal point, and may omit its
+//!   leading or trailing digits (`.5`, `5.`);
+//! * each command must have an even number of parameters.
+
+use std::bytes::Builder
+use std::strconv
+
+use crate::font::model::{BBox, FontError, Vec2}
+
+/// One parsed SVG command and its flat parameter list (`x y x y ...`).
+pub struct SvgCmd {
+    /// The command letter: `M`, `L`, `C`, `Q`, or `Z`.
+    pub c: char
+    /// Parameters in command order, flattened into pairs.
+    pub p: Vec<f64>
+}
+
+/// True for the ASCII whitespace recognised by the reference `\s` class.
+fn is_whitespace(c: char) -> bool {
+    c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\u{000b}' || c == '\u{000c}'
+}
+
+/// True for characters the reference admits in a command's parameter run.
+fn is_param_char(c: char) -> bool {
+    (c >= '0' && c <= '9') || c == '.' || c == '-' || c == ',' || is_whitespace(c)
+}
+
+/// Copy `chars[start..end]` into a fresh `String`.
+fn chars_to_string(chars: Vec<char>, start: i64, end: i64) -> String {
+    let mut out = Builder::new()
+    let mut i = start
+    while i < end {
+        out.write_char(chars[i])
+        i += 1
+    }
+    out.build()
+}
+
+/// Parse the parameter run of one SVG command.
+///
+/// A leading space is optional; every number is followed by optional
+/// whitespace and commas. A `-` (or `+`) starts a new number even when the
+/// previous one was written without a separator, which is the SVG number
+/// grammar and agrees with the reference on all real font data.
+pub fn parse_params(d: String) -> Result<Vec<f64>, FontError> {
+    let chars: Vec<char> = d.chars().collect()
+    let n = chars.len()
+    let mut params: Vec<f64> = #[]
+    let mut i = 0
+    while i < n {
+        // The reference regex begins with ` *`: only literal spaces are
+        // skipped here (previous iterations consume other whitespace).
+        while i < n && chars[i] == ' ' {
+            i += 1
+        }
+        if i >= n {
+            return Err(FontError::new(f"parse_params: unable to parse SVG params: {d}"))
+        }
+        let start = i
+        if chars[i] == '-' || chars[i] == '+' {
+            i += 1
+        }
+        let mut digits = 0
+        while i < n {
+            let c = chars[i]
+            if c >= '0' && c <= '9' {
+                digits += 1
+                i += 1
+            } else if c == '.' {
+                i += 1
+            } else {
+                break
+            }
+        }
+        if i == start || digits == 0 {
+            let rest = chars_to_string(chars, start, n)
+            return Err(FontError::new(f"parse_params: unable to parse SVG params: {rest}"))
+        }
+        let token = chars_to_string(chars, start, i)
+        let value = match strconv::parse_f64(token) {
+            Ok(v) => v
+            Err(_) => {
+                let bad = chars_to_string(chars, start, i)
+                return Err(FontError::new(f"parse_params: unable to parse double: {bad}"))
+            }
+        }
+        params.push(value)
+        // `\s*,*`: whitespace, then commas.
+        while i < n && (is_whitespace(chars[i]) || chars[i] == ',') {
+            i += 1
+        }
+    }
+    Ok(params)
+}
+
+/// Split an absolute SVG path into commands.
+///
+/// The whole input must be consumed by `M L C Q Z` commands; any other
+/// character (including a relative command letter) is an error. Command
+/// parameters are validated to be an even-length list.
+pub fn split_path(d: String) -> Result<Vec<SvgCmd>, FontError> {
+    let chars: Vec<char> = d.chars().collect()
+    let n = chars.len()
+    let mut cmds: Vec<SvgCmd> = #[]
+    let mut i = 0
+    while i < n {
+        let c = chars[i]
+        if c != 'M' && c != 'L' && c != 'C' && c != 'Q' && c != 'Z' {
+            return Err(FontError::new(f"split_path: unable to split SVG path {d}"))
+        }
+        i += 1
+        let start = i
+        while i < n && is_param_char(chars[i]) {
+            i += 1
+        }
+        let text = chars_to_string(chars, start, i)
+        let p = parse_params(text)?
+        if p.len() % 2 != 0 {
+            return Err(FontError::new(f"PathCmd::from_svg_cmd: unexpected odd params length in svg_cmd: {c}"))
+        }
+        cmds.push(SvgCmd { c: c, p: p })
+    }
+    Ok(cmds)
+}
+
+/// Format a number the way the reference `svg_num` does.
+///
+/// Gossamer's `f64` display already renders integral values without a
+/// fractional part; the trailing `.0` trim is kept for exact parity.
+pub fn svg_num(value: f64) -> String {
+    let s = f"{value}"
+    if s.ends_with(".0") {
+        s.substring(0, s.byte_len() - 2)
+    } else {
+        s
+    }
+}
+
+/// Translate (and optionally Y-invert) every point in an SVG path.
+///
+/// With `invert_y = true`, each Y value is multiplied by `-1` before the
+/// offset is added. Output spacing matches the reference exactly:
+/// `M1507 2024L1048 2024...`.
+pub fn translate_path(
+    d: String
+    x: f64
+    y: f64
+    invert_y: bool = false
+) -> Result<String, FontError> {
+    let cmds = split_path(d)?
+    let mut out = Builder::new()
+    let y_scale = if invert_y { -1.0 } else { 1.0 }
+    for cmd in cmds {
+        out.write_char(cmd.c)
+        let mut k = 0
+        while k < cmd.p.len() {
+            if k % 2 == 0 {
+                if k > 0 {
+                    out.write_char(' ')
+                }
+                out.write(svg_num(x + cmd.p[k]))
+            } else {
+                out.write_char(' ')
+                out.write(svg_num(y + y_scale * cmd.p[k]))
+            }
+            k += 1
+        }
+    }
+    Ok(out.build())
+}
+
+/// Conservative bounding box of an SVG path (all control points included).
+///
+/// This mirrors the reference `glyph_bbox`: the first `M` seeds the box and
+/// every subsequent parameter expands it. It does not solve for true Bézier
+/// extrema; use `Path::bounding_box` for that.
+pub fn glyph_bbox(d: String) -> Result<BBox, FontError> {
+    let cmds = split_path(d)?
+    let mut xmin = 0.0
+    let mut ymin = 0.0
+    let mut xmax = 0.0
+    let mut ymax = 0.0
+    let mut cmd_idx = 0
+    for cmd in cmds {
+        let mut index = 0
+        while index < cmd.p.len() {
+            let val = cmd.p[index]
+            if cmd.c == 'Z' {
+                return Err(FontError::new(f"glyph_bbox: cmd_idx={cmd_idx}, index={index}, unexpected command 'Z' with params"))
+            }
+            if cmd_idx == 0 && index == 0 {
+                if cmd.c != 'M' {
+                    return Err(FontError::new(f"glyph_bbox: cmd_idx={cmd_idx}, index={index}, unexpected command: '{cmd.c}'"))
+                }
+                xmin = val
+                xmax = val
+            } else if cmd_idx == 0 && index == 1 {
+                if cmd.c != 'M' {
+                    return Err(FontError::new(f"glyph_bbox: cmd_idx={cmd_idx}, index={index}, unexpected command: '{cmd.c}'"))
+                }
+                ymin = val
+                ymax = val
+            } else if index % 2 == 0 {
+                if val < xmin {
+                    xmin = val
+                }
+                if val > xmax {
+                    xmax = val
+                }
+            } else {
+                if val < ymin {
+                    ymin = val
+                }
+                if val > ymax {
+                    ymax = val
+                }
+            }
+            index += 1
+        }
+        cmd_idx += 1
+    }
+    Ok(BBox::new(Vec2::new(xmin, ymin), Vec2::new(xmax, ymax)))
+}

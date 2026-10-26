@@ -1,0 +1,136 @@
+//! 13-o-ring-groove-gauge — a parametric gauge for verifying O-ring groove
+//! dimensions, using standard AS568 cross-sections.
+
+use std::env
+use std::process
+
+use step
+
+fn notched_block(
+    width: f64
+    length: f64
+    height: f64
+    notches: Vec<(f64, f64, f64)>
+) -> step::Shape {
+    let hw = width / 2.0
+    let mut pts = #[(0.0, 0.0), (width, 0.0), (width, height)]
+    // Process notches by X offset descending (right to left) to maintain CCW.
+    // `notches` is generated in ascending X order.
+    let mut ni = notches.len() as i64 - 1
+    while ni >= 0 {
+        let notch = notches[ni]
+        let x, w, d = notch
+        if x + w < width {
+            pts.push((x + w, height))
+        }
+        pts.push((x + w, height - d))
+        pts.push((x, height - d))
+        pts.push((x, height))
+        ni -= 1
+    }
+    if pts[pts.len() - 1].0 > 0.0 {
+        pts.push((0.0, height))
+    }
+    let mut centered_profile = #[]
+    for p in pts {
+        centered_profile.push((p.0 - hw, p.1))
+    }
+    step::extrude(step::profile(centered_profile), length)
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "length": step::opt_double(80.0, help: "Length of the gauge block (mm)", min: Some(10.0))
+        "width": step::opt_double(60.0, help: "Width of the gauge block (mm)", min: Some(10.0))
+        "height": step::opt_double(10.0, help: "Height of the gauge block (mm)", min: Some(5.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(step::with_translate(spec), "13-o-ring-groove-gauge", "Generate a parametric O-ring groove gauge.", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let block_length = args.double_or("length", 80.0)
+    let block_width = args.double_or("width", 60.0)
+    let notched_height = args.double_or("height", 10.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    // Standard AS568 O-ring cross-sections and typical groove dimensions
+    // (cross_section, groove_width, groove_depth)
+    let standards = #[
+        (1.78, 2.4, 1.4)
+        (2.62, 3.6, 2.25)
+        (3.53, 4.8, 3.1)
+        (5.33, 7.1, 4.75)
+        (6.99, 9.5, 6.25)
+    ]
+
+    // Calculate notch positions by distributing remaining space as equal walls.
+    let mut total_groove_width = 0.0
+    for s in standards {
+        total_groove_width += s.1
+    }
+    let total_wall_width = block_width - total_groove_width
+    let wall_count = standards.len() as i64 + 1
+    let wall_size = total_wall_width / wall_count as f64
+    if wall_size < 1.0 {
+        eprintln(f"error: block width ({block_width}) is too small for these grooves (min wall 1.0mm)")
+        process::exit(1)
+    }
+    let mut notches = #[]
+    let mut current_x = wall_size
+    let mut i = 0
+    while i < standards.len() as i64 {
+        let standard = standards[i]
+        let w = standard.1
+        let d = standard.2
+        notches.push((current_x, w, d))
+        current_x += w + wall_size
+        i += 1
+    }
+
+    // 1. The notched block.
+    // We rotate it 90 around X and 180 around Z so it lies flat on the XY plane
+    // with the notches facing UP (+Z).
+    // Local X (Width) -> World -X (centered)
+    // Local Y (Height) -> World Z
+    // Local Z (Length) -> World Y
+    let gauge = notched_block(block_width, block_length, notched_height, notches)
+        .named("gauge-notches")
+        .colored(step::ORANGE)
+        .turned_x(90.0)
+        .turned_z(180.0)
+        .moved(x: tx, y: ty, z: tz)
+
+    let design = step::design(name: "o-ring-groove-gauge", documentation: args.documentation())
+        .add(gauge)
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

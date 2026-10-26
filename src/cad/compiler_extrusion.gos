@@ -1,0 +1,204 @@
+//! The extruded-profile compiler: caps (with holes) and side faces.
+
+use crate::cad::context::StepContext
+use crate::cad::geometry::{Vec2, Vec3, rotate_point, v_cross, v_norm, v_sub}
+use crate::cad::helpers::{
+    EdgeInfo, EdgeTable, add_plane_face_oriented, add_plane_face_with_holes_oriented
+}
+use crate::cad::types::{ExtrudedProfile, SceneNode}
+use crate::ids::Ref
+
+fn reverse2(pts: Vec<Vec2>) -> Vec<Vec2> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+/// Signed area: positive when wound counter-clockwise in the XY plane.
+pub fn signed_area_2d(poly: Vec<Vec2>) -> f64 {
+    let n = poly.len()
+    if n < 3 {
+        return 0.0
+    }
+    let mut area = 0.0
+    let mut i = 0
+    while i < n {
+        let x0, y0 = poly[i]
+        let x1, y1 = poly[(i + 1) % n]
+        area = area + x0 * y1 - x1 * y0
+        i += 1
+    }
+    area / 2.0
+}
+
+/// Compile an extruded profile into its faces.
+pub fn compile_extruded_profile(
+    ctx: &mut StepContext
+    node: SceneNode
+    extrusion: ExtrudedProfile
+    reverse: bool = false
+) -> Vec<Ref> {
+    let profile = extrusion.profile
+    let height_mm = extrusion.height_mm
+    if height_mm == 0.0 || profile.outer.len() < 3 {
+        return #[]
+    }
+
+    // Normalize winding: outer counter-clockwise, holes clockwise. Side-face
+    // normals come from the loop direction while caps use their expected
+    // outward normal; disagreeing windings leave shared edges traversed in the
+    // same direction.
+    let outer = if signed_area_2d(profile.outer) < 0.0 {
+        reverse2(profile.outer)
+    } else {
+        profile.outer
+    }
+    let mut holes = #[]
+    for h in profile.holes {
+        if h.len() >= 3 {
+            if signed_area_2d(h) > 0.0 {
+                holes.push(reverse2(h))
+            } else {
+                holes.push(h)
+            }
+        }
+    }
+
+    // Flatten loops (outer first, then holes).
+    let mut loops = #[outer]
+    for h in holes {
+        loops.push(h)
+    }
+
+    // Build 3D points (bottom then top per loop).
+    let mut pts_raw: Vec<Vec3> = #[]
+    let mut loop_indices: Vec<(Vec<i64>, Vec<i64>)> = #[]
+    for poly in loops {
+        let mut b = #[]
+        for pt in poly {
+            pts_raw.push((pt.0, pt.1, 0.0))
+            b.push(pts_raw.len() as i64 - 1)
+        }
+        let mut t = #[]
+        for pt in poly {
+            pts_raw.push((pt.0, pt.1, height_mm))
+            t.push(pts_raw.len() as i64 - 1)
+        }
+        loop_indices.push((b, t))
+    }
+
+    // Transform all points: rotate, then translate.
+    let mut pts = #[]
+    for pt in pts_raw {
+        let rx, ry, rz = rotate_point(pt, node.rx, node.ry, node.rz)
+        pts.push((rx + node.tx, ry + node.ty, rz + node.tz))
+    }
+
+    let mut cp_refs = #[]
+    for pt in pts {
+        cp_refs.push(ctx.cartesian_point(pt.0, pt.1, pt.2))
+    }
+
+    let mut vp_refs = #[]
+    for cp_ref in cp_refs {
+        vp_refs.push(ctx.vertex_point(cp_ref))
+    }
+
+    let mut edges: Vec<EdgeInfo> = #[]
+    let mut seen: Map<String, bool> = Map::new()
+
+    // Per-loop perimeter and vertical edges.
+    for loop_pair in loop_indices {
+        let b, t = loop_pair
+        let n = b.len()
+        let mut i = 0
+        while i < n {
+            let j = (i + 1) % n
+            add_edge(ctx, pts, cp_refs, vp_refs, &mut edges, &mut seen, b[i], b[j])
+            add_edge(ctx, pts, cp_refs, vp_refs, &mut edges, &mut seen, t[i], t[j])
+            add_edge(ctx, pts, cp_refs, vp_refs, &mut edges, &mut seen, b[i], t[i])
+            i += 1
+        }
+    }
+
+    let mut table = EdgeTable::new(edges)
+
+    // Faces.
+    let mut face_refs = #[]
+
+    // Bottom/top (with holes).
+    let outer_b, outer_t = loop_indices[0]
+    let mut hole_bs = #[]
+    let mut hole_ts = #[]
+    let mut li = 1
+    while li < loop_indices.len() {
+        let hb, ht = loop_indices[li]
+        hole_bs.push(hb)
+        hole_ts.push(ht)
+        li += 1
+    }
+    let down_raw = rotate_point((0.0, 0.0, -1.0), node.rx, node.ry, node.rz)
+    let up_raw = rotate_point((0.0, 0.0, 1.0), node.rx, node.ry, node.rz)
+    face_refs.push(add_plane_face_with_holes_oriented(
+        ctx, &mut table, pts, cp_refs, outer_b, hole_bs, down_raw, reverse
+    ))
+    face_refs.push(add_plane_face_with_holes_oriented(
+        ctx, &mut table, pts, cp_refs, outer_t, hole_ts, up_raw, reverse
+    ))
+
+    // Side faces.
+    for loop_pair in loop_indices {
+        let b, t = loop_pair
+        let n = b.len()
+        let mut i = 0
+        while i < n {
+            let j = (i + 1) % n
+            let p0 = pts[b[i]]
+            let p1 = pts[b[j]]
+            let p2 = pts[t[i]]
+            let v1 = v_sub(p1, p0)
+            let v2 = v_sub(p2, p0)
+            let expected = v_norm(v_cross(v1, v2))
+            face_refs.push(add_plane_face_oriented(
+                ctx
+                &mut table
+                pts
+                cp_refs
+                #[b[i], b[j], t[j], t[i]]
+                expected
+                reverse
+            ))
+            i += 1
+        }
+    }
+    face_refs
+}
+
+fn add_edge(
+    ctx: &mut StepContext
+    pts: Vec<Vec3>
+    cp_refs: Vec<Ref>
+    vp_refs: Vec<Ref>
+    edges: &mut Vec<EdgeInfo>
+    seen: &mut Map<String, bool>
+    a: i64
+    b: i64
+) {
+    let key = if a < b { f"{a}:{b}" } else { f"{b}:{a}" }
+    if seen.get(key).unwrap_or(false) {
+        return
+    }
+    seen.insert(key, true)
+    let start = if a < b { a } else { b }
+    let end = if a < b { b } else { a }
+    let dir_raw = v_norm(v_sub(pts[end], pts[start]))
+    let dir_ref = ctx.direction(dir_raw.0, dir_raw.1, dir_raw.2)
+    let vec_ref = ctx.vector(dir_ref, 1.0)
+    let line_ref = ctx.line(cp_refs[start], vec_ref)
+    let ec_ref = ctx.edge_curve(vp_refs[start], vp_refs[end], line_ref, true)
+    edges.push(EdgeInfo { start: start, end: end, edge: ec_ref })
+}

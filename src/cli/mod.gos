@@ -1,0 +1,85 @@
+//! Bespoke command-line argument parser with STEP-example semantics.
+//!
+//! The module ports the reference `@cli` wrapper around
+//! the reference argument parser without depending on a host parser. It keeps
+//! the reference's observable behaviour (argv preprocessing, negative-number
+//! handling, Vec3 folding, range validation, help layout, and exact messages)
+//! while exposing failures as `Result` instead of printing and aborting.
+//!
+//! Layers:
+//!
+//! - [`crate::cli::spec`] — `Arg`, `ArgKind`, `NO_SHORT`, the `opt_*`/`flag`
+//!   constructors, `with_translate`, and the fluent `Cli` builder.
+//! - [`crate::cli::parse`] — `CliError`, `Args`, `parse`, `parse_cli`, `report`,
+//!   and all value accessors (`double`, `int`, `string_opt`, `flag`,
+//!   `translate_xyz`, `command_line`, `documentation`).
+//! - [`crate::cli::help`] — pure help, command-line, and documentation
+//!   rendering, including byte-wise name sorting.
+//!
+//! Gossamer has no `pub use`, so this file re-exports the common names as type
+//! aliases and forwarding functions.
+//!
+//! ```text
+//! let cli = crate::cli::Cli::new("demo", "Demo command")
+//!     .string("out", short: 'o', help: "Output file")
+//!     .int("count", 1, help: "Count", min: Some(1))
+//!
+//! match crate::cli::parse_cli(cli, cli_args: #["-o", "a.step"]) {
+//!     Ok(args) => println(args.string_opt("out").unwrap_or("(none)"))
+//!     Err(err) => {
+//!         let _ = crate::cli::report(err)
+//!     }
+//! }
+//! ```
+
+use std::collections::Map
+
+use crate::cli::spec
+use crate::cli::parse
+use crate::cli::help
+
+pub type Arg = spec::Arg
+pub type ArgKind = spec::ArgKind
+pub type Cli = spec::Cli
+
+pub type Args = parse::Args
+pub type CliError = parse::CliError
+
+/// Sentinel `char` meaning "no short option".
+pub const NO_SHORT: char = spec::NO_SHORT
+
+/// Parse a compatibility `Map<String, Arg>` specification.
+pub fn parse_args(
+    arg_spec: Map<String, Arg>
+    prog: String = "PROG"
+    description: String = ""
+    cli_args: Vec<String> = #[]
+    raise_on_error: bool = true
+) -> Result<Args, CliError> {
+    parse::parse(
+        arg_spec
+        prog: prog
+        description: description
+        cli_args: cli_args
+        raise_on_error: raise_on_error
+    )
+}
+
+/// Parse a fluent `Cli` builder specification.
+pub fn parse_cli(
+    cli: Cli
+    cli_args: Vec<String> = #[]
+    raise_on_error: bool = true
+) -> Result<Args, CliError> {
+    parse::parse_cli(cli, cli_args: cli_args, raise_on_error: raise_on_error)
+}
+
+/// Render the help block for a builder specification.
+pub fn help_text(cli: Cli) -> String {
+    help::render_help(cli.prog, cli.description, cli.order, cli.args)
+}
+
+/// Print a CLI error or help block, returning the process exit status.
+pub fn report(err: CliError) -> i32 {
+    parse::report(err)
+}

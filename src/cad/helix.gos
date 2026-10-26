@@ -1,0 +1,64 @@
+//! Helix path generation for sweep operations.
+
+use std::math
+
+use crate::cad::geometry::{Vec3, v_cross, v_len}
+use crate::cad::types::SweepPath
+
+fn normalize(v: Vec3) -> Vec3 {
+    let len = math::sqrt(v.0 * v.0 + v.1 * v.1 + v.2 * v.2)
+    if len == 0.0 {
+        (0.0, 0.0, 0.0)
+    } else {
+        (v.0 / len, v.1 / len, v.2 / len)
+    }
+}
+
+/// Generate a helix path.
+pub fn helix_path(
+    pos: Vec3 = (0.0, 0.0, 0.0)
+    size_per_turn: Vec3 = (1.0, 1.0, 1.0)
+    num_turns: f64 = 1.0
+    num_segs_per_turn: i64 = 36
+    start_angle: f64 = 0.0
+    clockwise: bool = true
+) -> SweepPath {
+    let max_angle = 2.0 * math::PI * num_turns
+    let total_segments = math::ceil(num_turns * num_segs_per_turn as f64)
+    if total_segments < 1.0 {
+        return SweepPath { points: #[], normals: #[], tangents: #[] }
+    }
+    let capacity = 1 + total_segments as i64
+    let mut points = Vec::with_capacity(capacity)
+    let mut normals = Vec::with_capacity(capacity)
+    let mut tangents = Vec::with_capacity(capacity)
+
+    let angle_delta = max_angle / total_segments
+    let delta_z = size_per_turn.2 * num_turns / total_segments
+    let direction = if clockwise { -1.0 } else { 1.0 }
+    let start_angle = math::PI * start_angle / 180.0
+    let mut seg_idx = 0
+    while seg_idx < capacity {
+        let angle = direction * (start_angle + seg_idx as f64 * angle_delta)
+        let cos_angle = math::cos(angle)
+        let sin_angle = math::sin(angle)
+        let x = pos.0 + size_per_turn.0 * cos_angle
+        let y = pos.1 + size_per_turn.1 * sin_angle
+        let z = pos.2 + seg_idx as f64 * delta_z
+        points.push((x, y, z))
+        let tx = -direction * sin_angle
+        let ty = direction * cos_angle
+        let tz = 0.0
+        let tangent = (tx, ty, tz)
+        tangents.push(normalize(tangent))
+        let normal = (cos_angle, sin_angle, 0.0)
+        normals.push(normalize(v_cross(normal, tangent)))
+        seg_idx += 1
+    }
+    SweepPath { points: points, normals: normals, tangents: tangents }
+}
+
+/// Keep v_len referenced for potential callers.
+pub fn _v_len_marker(p: Vec3) -> f64 {
+    v_len(p)
+}

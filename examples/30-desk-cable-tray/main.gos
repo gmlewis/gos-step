@@ -1,0 +1,135 @@
+//! 30-desk-cable-tray — a parametric under-desk cable management tray.
+//!
+//! Usage: ./run-example.sh 30 --length 150 --width 50 --height 40 > tray.step
+
+use std::env
+use std::process
+
+use step
+use step::Face::{Back, Top}
+
+fn reverse_pts(pts: Vec<step::V2>) -> Vec<step::V2> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "length": step::opt_double(200.0, help: "Total length of the tray (mm)", min: Some(50.0))
+        "width": step::opt_double(60.0, help: "Width/depth of the tray (mm)", min: Some(20.0))
+        "height": step::opt_double(50.0, help: "Total height of the tray (mm)", min: Some(20.0))
+        "thickness": step::opt_double(3.0, help: "Material thickness (mm)", min: Some(1.0))
+        "mountHoleSpacing": step::opt_double(120.0, help: "Spacing between mounting holes (mm)", min: Some(20.0))
+        "mountHoleDia": step::opt_double(5.0, help: "Diameter of mounting holes (mm)", min: Some(1.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "30-desk-cable-tray"
+        "Generate a parametric under-desk cable management tray."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+
+    let length = args.double_or("length", 200.0)
+    let width = args.double_or("width", 60.0)
+    let height = args.double_or("height", 50.0)
+    let thick = args.double_or("thickness", 3.0)
+    let m_spacing = args.double_or("mountHoleSpacing", 120.0)
+    let m_dia = args.double_or("mountHoleDia", 5.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            return Ok(())
+        }
+    }
+
+    // 1. Back wall (mounting face).
+    // Original XY plane (length x height), extruded by 'thick' in Z.
+    // After turned_x(90): x: 0..length, y: -thick..0, z: 0..height.
+    let back_wall_outer = step::rect(length, height)
+    let m_hole = reverse_pts(step::circle(m_dia))
+    let back_wall_profile = step::profile(back_wall_outer).add_holes_at(
+        #[
+            (length / 2.0 - m_spacing / 2.0, height / 2.0)
+            (length / 2.0 + m_spacing / 2.0, height / 2.0)
+        ]
+        m_hole
+    )
+    let back_wall = step::extrude(back_wall_profile, thick)
+        .named("back-wall")
+        .colored(step::rgb(0.2, 0.3, 0.6))
+        .turned_x(90.0)
+        .moved(-length / 2.0, 0.0, 0.0)
+
+    // 2. Bottom plate.
+    // Fills the gap between back-wall (y=-thick) and front-lip (y=-width+thick).
+    let bottom = step::cuboid(length, width - 2.0 * thick, thick)
+        .named("bottom-plate")
+        .colored(step::rgb(0.3, 0.4, 0.7))
+        .moved(-length / 2.0, -width + thick, 0.0)
+
+    // 3. Front lip.
+    // Positioned at the very front (min_y).
+    let front_lip = step::cuboid(length, thick, height * 0.4)
+        .named("front-lip")
+        .colored(step::rgb(0.4, 0.5, 0.8))
+        .moved(-length / 2.0, -width, 0.0)
+
+    // 4. Labels.
+    let font = step::load_font("baloo")?
+    let design = step::design(name: "desk-cable-tray", documentation: args.documentation())
+        .add(back_wall)
+        .add(bottom)
+        .add(front_lip)
+        .add_text_on_face(
+            front_lip
+            "CABLE TRAY"
+            Back // Outside face (min_y)
+            font
+            font_size: Some(height * 0.15)
+            color: step::WHITE
+        )
+        .add_text_on_face(
+            back_wall
+            "MOUNTING SIDE"
+            Top // Inside face (local +Z, world -Y)
+            font
+            font_size: Some(height * 0.1)
+            color: step::WHITE
+        )
+        .moved(tx, ty, tz)
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

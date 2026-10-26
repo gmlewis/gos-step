@@ -1,0 +1,146 @@
+//! 07-cable-label-clip — a snap-on cable label clip with programmable text.
+//!
+//! Usage: gos run examples/07-cable-label-clip/main.gos --diameter 5 --text USB > clip.step
+
+use std::env
+use std::math
+use std::process
+
+use step
+use step::Face::{Top}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "diameter": step::opt_double(6.0, help: "Cable diameter (mm)", min: Some(1.0))
+        "text": step::opt_string(help: "Label text")
+        "length": step::opt_double(20.0, help: "Clip length (mm)", min: Some(5.0))
+        "thickness": step::opt_double(1.5, help: "Clip wall thickness (mm)", min: Some(0.5))
+        "opening": step::opt_double(100.0, help: "Opening angle (degrees)", min: Some(10.0), max: Some(120.0))
+        "fontSize": step::opt_double(0.0, help: "Font size", min: Some(0.0))
+        "depth": step::opt_double(0.5, help: "Engraving depth (mm)", min: Some(0.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "07-cable-label-clip"
+        "Generate a snap-on cable label clip."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let diameter = match args.double("diameter") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let label_text = args.string_opt("text").unwrap_or("LABEL")
+    let clip_length = match args.double("length") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let wall = match args.double("thickness") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let opening_deg = match args.double("opening") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let emboss_depth = match args.double("depth") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let font_size_opt = match args.double("fontSize") {
+        Ok(n) => n.value
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    //
+    let open_rad = opening_deg * math::PI / 180.0
+    // Opening faces -Y (front)
+    let start_angle = -(math::PI / 2.0) + open_rad / 2.0
+    let end_angle = 3.0 * math::PI / 2.0 - open_rad / 2.0
+    let outer_arc = step::arc(diameter + 2.0 * wall, start_angle, end_angle, 32)
+    let inner_arc = step::arc(diameter, start_angle, end_angle, 32)
+
+    //
+    let mut c_profile = #[]
+    for p in outer_arc {
+        c_profile.push(p)
+    }
+    for p in inner_arc.rev() {
+        c_profile.push(p)
+    }
+
+    // 1. The C-clip body (extruded along Z)
+    let clip_body = step::extrude(step::profile(c_profile), clip_length)
+        .named("clip-body")
+        .colored(step::BLUE)
+        .moved(tx, ty, tz)
+
+    // 2. Label Plaque
+    let plaque_width = diameter + wall
+    let plaque_thickness = wall
+    let plaque = step::cuboid(plaque_width, plaque_thickness, clip_length)
+        .named("label-plaque")
+        .colored(step::GREEN)
+        .moved(tx - plaque_width / 2.0, ty + diameter / 2.0, tz)
+
+    let mut design = step::design(name: "cable-label", documentation: args.documentation())
+        .add(clip_body)
+        .add(plaque)
+
+    // 3. Text
+    let font = step::font("baloo")?
+    design = if font_size_opt > 0.0 {
+        design.add_text_on_face(
+            plaque
+            label_text
+            Top
+            font
+            font_size: Some(font_size_opt)
+            emboss_depth: Some(emboss_depth)
+            color: step::ORANGE
+        )
+    } else {
+        design.add_text_on_face(
+            plaque
+            label_text
+            Top
+            font
+            emboss_depth: Some(emboss_depth)
+            color: step::ORANGE
+        )
+    }
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

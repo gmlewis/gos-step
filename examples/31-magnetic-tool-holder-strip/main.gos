@@ -1,0 +1,158 @@
+//! 31-magnetic-tool-holder-strip — a magnetic tool holder strip.
+//!
+//! Usage: ./run-example.sh 31 --rows 1 --cols 5 --labelPrefix P > strip.step
+
+use std::env
+use std::process
+
+use step
+use step::Face::{Top}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "rows": step::opt_int(1, help: "Number of rows", min: Some(1))
+        "cols": step::opt_int(5, help: "Number of columns", min: Some(1))
+        "cellSize": step::opt_double(30.0, help: "Size of each cell (mm)", min: Some(10.0))
+        "magnetDiameter": step::opt_double(10.0, help: "Diameter of magnet (mm)", min: Some(1.0))
+        "magnetDepth": step::opt_double(3.0, help: "Depth of magnet pocket (mm)", min: Some(0.1))
+        "lipThickness": step::opt_double(0.5, help: "Thickness of retention lip (mm)", min: Some(0.0))
+        "lipWidth": step::opt_double(1.0, help: "Width of retention lip (mm)", min: Some(0.0))
+        "thickness": step::opt_double(6.0, help: "Total thickness of the strip (mm)", min: Some(5.0))
+        "filletRadius": step::opt_double(3.0, help: "Fillet radius for the strip corners (mm)", min: Some(0.0))
+        "labelPrefix": step::opt_string(help: "Prefix for pocket labels")
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "31-magnetic-tool-holder-strip"
+        "Generate a magnetic tool holder strip."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+
+    let rows = args.int_or("rows", 1)
+    let cols = args.int_or("cols", 5)
+    let cell_size = args.double_or("cellSize", 30.0)
+    let magnet_diameter = args.double_or("magnetDiameter", 10.0)
+    let magnet_depth = args.double_or("magnetDepth", 3.0)
+    let lip_thickness = args.double_or("lipThickness", 0.5)
+    let lip_width = args.double_or("lipWidth", 1.0)
+    let thickness = args.double_or("thickness", 6.0)
+    let fillet_radius = args.double_or("filletRadius", 3.0)
+    let label_prefix = args.string_opt("labelPrefix")
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            return Ok(())
+        }
+    }
+
+    if magnet_depth >= thickness {
+        eprintln("error: magnetDepth must be less than thickness")
+        return Ok(())
+    }
+    if lip_thickness >= magnet_depth {
+        eprintln("error: lipThickness must be less than magnetDepth")
+        return Ok(())
+    }
+
+    let total_width = cols as f64 * cell_size
+    let total_height = rows as f64 * cell_size
+    let mut design = step::design(name: "magnetic-tool-strip", documentation: args.documentation())
+
+    // Generate magnet locations.
+    let mut centers = #[]
+    for r in 0..rows {
+        for c in 0..cols {
+            let x = (c as f64 + 0.5) * cell_size
+            let y = (r as f64 + 0.5) * cell_size
+            centers.push((x, y))
+        }
+    }
+
+    // 1. Bottom solid layer.
+    let bottom_height = thickness - magnet_depth
+    let outer_profile = step::rounded_rect(total_width, total_height, fillet_radius)
+    let bottom_part = step::extrude(step::profile(outer_profile), bottom_height)
+        .named("strip-bottom")
+        .colored(step::PURPLE)
+        .moved(tx, ty, tz)
+    design = design.add(bottom_part)
+
+    // 2. Middle pocket layer (main magnet cavity).
+    let middle_height = magnet_depth - lip_thickness
+    let magnet_profile = step::circle(magnet_diameter)
+    let middle_part_profile = step::profile(outer_profile).add_holes_at(centers, magnet_profile)
+    let middle_part = step::extrude(middle_part_profile, middle_height)
+        .named("strip-middle")
+        .colored(step::CYAN)
+        .moved(tx, ty, tz + bottom_height)
+    design = design.add(middle_part)
+
+    // 3. Top lip layer.
+    if lip_thickness > 0.0 {
+        let lip_diameter = magnet_diameter - 2.0 * lip_width
+        let lip_profile = step::circle(lip_diameter)
+        let top_part_profile = step::profile(outer_profile).add_holes_at(centers, lip_profile)
+        let top_part = step::extrude(top_part_profile, lip_thickness)
+            .named("strip-top")
+            .colored(step::MAGENTA)
+            .moved(tx, ty, tz + bottom_height + middle_height)
+        design = design.add(top_part)
+    }
+
+    // 4. Optional labels for each pocket.
+    if let Some(prefix) = label_prefix {
+        let font = step::load_font("baloo")?
+        let bbox_node = step::cuboid(total_width, total_height, thickness)
+            .named("bbox")
+            .moved(tx, ty, tz)
+        for r in 0..rows {
+            for c in 0..cols {
+                let label = f"{prefix}-{r + 1}-{c + 1}"
+                let x = (c as f64 + 0.5) * cell_size
+                let y = (r as f64 + 0.5) * cell_size
+                // Put label on the top face.
+                design = design.add_text_on_face(
+                    bbox_node
+                    label
+                    Top
+                    font
+                    font_size: Some(magnet_diameter * 0.35)
+                    offset_x: x - total_width / 2.0
+                    offset_y: y - total_height / 2.0 + magnet_diameter * 0.75
+                    emboss_depth: Some(0.2)
+                    color: step::ORANGE
+                )
+            }
+        }
+    }
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

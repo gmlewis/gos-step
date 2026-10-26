@@ -1,0 +1,168 @@
+//! 28-phone-stand-parametric — a parametric phone stand.
+//!
+//! Usage: ./run-example.sh 28 --phoneThickness 10 > stand.step
+
+use std::env
+use std::math
+use std::process
+
+use step
+use step::Face::{Top}
+
+fn side_support(
+    base_l: f64
+    lip_h: f64
+    back_h: f64
+    angle_deg: f64
+    t: f64
+) -> Vec<step::SceneNode> {
+    let color = step::rgb(0.2, 0.4, 0.8)
+    let alpha = angle_deg * math::PI / 180.0
+    let rot = 90.0 + angle_deg
+    let base = step::cuboid(t, base_l, t)
+        .named("side-base")
+        .colored(color)
+    let lip = step::cuboid(t, t, lip_h)
+        .named("side-lip")
+        .colored(color)
+        .moved(0.0, base_l - t, 0.0)
+    // Match the back plate: height along local Y, thickness along local Z.
+    let back = step::cuboid(t, back_h, t)
+        .named("side-back")
+        .colored(color)
+        .turned_x(rot)
+        .moved(0.0, t * math::cos(alpha), t * math::sin(alpha))
+    #[base, lip, back]
+}
+
+fn back_plate(notch_w: f64, width: f64, height: f64, t: f64) -> step::SceneNode {
+    let hw = width / 2.0
+    let nh = height * 0.3
+    let nw = notch_w
+
+    // Back plate with notch merged into outer profile.
+    let outer = #[
+        (-hw, 0.0)
+        (-nw / 2.0, 0.0)
+        (-nw / 2.0, nh)
+        (nw / 2.0, nh)
+        (nw / 2.0, 0.0)
+        (hw, 0.0)
+        (hw, height)
+        (-hw, height)
+    ]
+    step::extrude(step::profile(outer), t)
+        .named("back-plate")
+        .colored(step::rgb(0.3, 0.5, 0.9))
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "phoneThickness": step::opt_double(12.0, help: "Thickness of the phone/tablet (mm)", min: Some(0.0), min_exclusive: true)
+        "viewAngle": step::opt_double(20.0, help: "Viewing angle from vertical (degrees)", min: Some(0.0), max: Some(45.0))
+        "width": step::opt_double(70.0, help: "Total width of the stand (mm)", min: Some(20.0))
+        "height": step::opt_double(120.0, help: "Total height of the back support (mm)", min: Some(50.0))
+        "thickness": step::opt_double(5.0, help: "Material thickness (mm)", min: Some(2.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "28-phone-stand-parametric"
+        "Generate a parametric phone stand."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+
+    let phone_t = args.double_or("phoneThickness", 12.0)
+    let angle = args.double_or("viewAngle", 20.0)
+    let width = args.double_or("width", 70.0)
+    let height = args.double_or("height", 120.0)
+    let t = args.double_or("thickness", 5.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            process::exit(1)
+        }
+    }
+
+    // Design constants.
+    let lip_h = 20.0
+    // The back support leans back by `angle` from vertical. Its front face
+    // meets the base at y = t (1 - sin a) / cos a, so reserve that plus the
+    // phone thickness and the front lip.
+    let alpha = angle * math::PI / 180.0
+    let sin_a = math::sin(alpha)
+    let cos_a = math::cos(alpha)
+    let plate_y = t * cos_a // shift the tilted plate into the base
+    let plate_z = t * sin_a
+    let base_l = phone_t + t + t * (1.0 - sin_a) / cos_a
+
+    // Create side supports. The cuboids start at x = 0 and are t wide, so the
+    // left one starts at -width/2 and the right one ends at +width/2.
+    let left_x = -width / 2.0
+    let right_x = width / 2.0 - t
+    let left_side = side_support(base_l, lip_h, height, angle, t)
+        .map(|node| node.moved(left_x, 0.0, 0.0))
+    let right_side = side_support(base_l, lip_h, height, angle, t)
+        .map(|node| node.moved(right_x, 0.0, 0.0))
+
+    // Back plate connecting them, leaning backwards from vertical.
+    let inner_w = width - 2.0 * t
+    let rot = 90.0 + angle
+    let back = back_plate(25.0, inner_w, height, t)
+        .turned_x(rot)
+        .moved(0.0, plate_y, plate_z)
+
+    // Front lip plate.
+    let front_lip = step::cuboid(inner_w, t, lip_h)
+        .named("front-lip")
+        .colored(step::rgb(0.1, 0.2, 0.5))
+        .moved(-inner_w / 2.0, base_l - t, 0.0)
+
+    // Add branding text on the back plate.
+    let font = step::load_font("baloo")?
+    let design = step::design(name: "phone-stand", documentation: args.documentation())
+        .add_all(left_side)
+        .add_all(right_side)
+        .add(back)
+        .add(front_lip)
+        .add_text_on_face(
+            back
+            "PHONE"
+            Top
+            font
+            font_size: Some(10.0)
+            emboss_depth: Some(2.0)
+            offset_y: height * 0.2
+            color: step::ORANGE
+        )
+        .moved(tx, ty, tz)
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

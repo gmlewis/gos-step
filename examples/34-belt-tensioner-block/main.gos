@@ -1,0 +1,154 @@
+//! 34-belt-tensioner-block
+//!
+//! A tensioner block with computed belt path and teeth geometry.
+//! Demonstrates complex profile generation with integrated cutouts and teeth.
+//!
+//! Usage (stdout):
+//!   ./run-example.sh 34 > tensioner.step
+//!
+//! Usage (write file):
+//!   ./run-example.sh 34 -o tensioner.step
+
+use std::env
+use std::math
+use std::process
+
+use step
+use step::Face::{Top}
+
+fn reverse(pts: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "length": step::opt_double(50.0, help: "Block length (mm)")
+        "width": step::opt_double(20.0, help: "Block width (mm)")
+        "height": step::opt_double(15.0, help: "Block height (mm)")
+        "beltThickness": step::opt_double(1.5, help: "Belt thickness (mm)")
+        "toothPitch": step::opt_double(2.0, help: "Belt tooth pitch (GT2 = 2mm)")
+        "boltDia": step::opt_double(4.2, help: "Tensioning bolt diameter (mm)")
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file")
+    }
+    let args = match step::parse_args(step::with_translate(spec), "34-belt-tensioner-block", "", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let l = args.double_or("length", 50.0)
+    let w = args.double_or("width", 20.0)
+    let h = args.double_or("height", 15.0)
+    let belt_t = args.double_or("beltThickness", 1.5)
+    let pitch = args.double_or("toothPitch", 2.0)
+    let bolt_d = args.double_or("boltDia", 4.2)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => (0.0, 0.0, 0.0)
+    }
+
+    // 1. Side Profile (XZ Plane)
+    // We'll extrude this along the Y axis (width)
+    let r = 3.0 // corner radius
+    let n = 8
+    let slot_h = belt_t + 1.0
+    let slot_y = h / 2.0 - slot_h / 2.0
+    let slot_l = l * 0.7
+
+    // Construct a single CCW loop
+    let mut outer: Vec<(f64, f64)> = #[]
+
+    // Start from the top-right corner of the belt entry
+    outer.push((l, slot_y + slot_h))
+
+    // Top-right fillet
+    for p in step::arc(2.0 * r, 0.0, 0.5 * math::PI, n) {
+        outer.push((p.0 + l - r, p.1 + h - r))
+    }
+
+    // Top-left fillet
+    for p in step::arc(2.0 * r, 0.5 * math::PI, math::PI, n) {
+        outer.push((p.0 + r, p.1 + h - r))
+    }
+
+    // Bottom-left fillet
+    for p in step::arc(2.0 * r, math::PI, 1.5 * math::PI, n) {
+        outer.push((p.0 + r, p.1 + r))
+    }
+
+    // Bottom-right corner (SHARP)
+    outer.push((l, 0.0))
+
+    // Lower part of the belt entry
+    outer.push((l, slot_y))
+
+    // Teeth along the bottom of the slot
+    let tooth_h = 0.7
+    let tooth_w = pitch / 2.0
+    let num_teeth = (slot_l / pitch) as i64
+    let mut i: i64 = 0
+    while i < num_teeth {
+        let teeth_x = l - i as f64 * pitch
+        // skip first point as it's already pushed as (l, slot_y)
+        if i > 0 {
+            outer.push((teeth_x, slot_y))
+        }
+        outer.push((teeth_x - tooth_w / 2.0, slot_y + tooth_h))
+        outer.push((teeth_x - tooth_w, slot_y))
+        i += 1
+    }
+
+    // End of slot - only push if it's not identical to the last tooth point
+    let last_tx = l - (num_teeth - 1) as f64 * pitch - tooth_w
+    if math::abs(last_tx - (l - slot_l)) > 0.001 {
+        outer.push((l - slot_l, slot_y))
+    }
+    outer.push((l - slot_l, slot_y + slot_h))
+    // Back to start (implied by loop)
+
+    // 2. Bolt Hole (must be fully inside and not intersect the slot)
+    let bolt_x = (l - slot_l) / 2.0
+    let bolt_hole = reverse(step::circle(bolt_d))
+    let bolt_hole_translated = step::translate_pts(bolt_hole, bolt_x, h / 2.0)
+
+    // 3. Create the main solid
+    let tensioner = step::extrude(step::profile(outer).add_hole(bolt_hole_translated), w)
+        .named("tensioner-block")
+        .colored(step::rgb(0.2, 0.6, 0.9)) // Beautiful Sky Blue
+        .turned_x(90.0)
+        .moved(tx - l / 2.0, ty + w / 2.0, tz)
+
+    // 4. Design and Labels
+
+    let font = step::load_font("baloo")?
+    let design = step::design(name: "belt-tensioner", documentation: args.documentation())
+        .add(tensioner)
+        .add_text_on_face(tensioner, "BELT", Top, font, font_size: Some(4.0), offset_y: h / 3.0)
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(_) => design.write_blender_python(bpy_path)?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

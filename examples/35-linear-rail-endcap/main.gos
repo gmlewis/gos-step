@@ -1,0 +1,132 @@
+//! 35-linear-rail-endcap
+//!
+//! Endcaps that fit common rail profiles, with optional wipers and covers.
+//! Demonstrates precision pockets and multi-profile extrusions.
+//!
+//! Usage (stdout):
+//!   ./run-example.sh 35 > endcap.step
+
+use std::env
+use std::math
+use std::process
+
+use step
+use step::Face::{Top}
+
+fn reverse(pts: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "railWidth": step::opt_double(12.0, help: "Linear rail width (mm)")
+        "railHeight": step::opt_double(8.0, help: "Linear rail height (mm)")
+        "thickness": step::opt_double(10.0, help: "Endcap thickness (mm)")
+        "clearance": step::opt_double(0.2, help: "Clearance for the rail pocket (mm)")
+        "seatDiameter": step::opt_double(3.5, help: "Fastener seat diameter (mm)")
+        "seatDepth": step::opt_double(5.0, help: "Fastener seat depth (mm)")
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file")
+    }
+    let args = match step::parse_args(step::with_translate(spec), "35-linear-rail-endcap", "", env::args()) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+    let rw = args.double_or("railWidth", 12.0)
+    let rh = args.double_or("railHeight", 8.0)
+    let thick = args.double_or("thickness", 10.0)
+    let clr = args.double_or("clearance", 0.2)
+    let sd = args.double_or("seatDiameter", 3.5)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => (0.0, 0.0, 0.0)
+    }
+
+    // 1. Endcap Outer Profile (including the rail cutout)
+    let body_w = rw + 10.0
+    let body_h = rh + 10.0
+    let r = 4.0
+    let n = 8
+    let pw = rw + 2.0 * clr
+    let ph = rh + clr
+    let mut outer: Vec<(f64, f64)> = #[]
+
+    // Rail cutout (bottom-center)
+    // We'll build CCW.
+    // Start bottom-right of cutout
+    outer.push((pw / 2.0, -body_h / 2.0))
+    // Bottom-right of body (sharp)
+    outer.push((body_w / 2.0, -body_h / 2.0))
+
+    // Top-right fillet
+    for p in step::arc(2.0 * r, 0.0, 0.5 * math::PI, n) {
+        outer.push((p.0 + body_w / 2.0 - r, p.1 + body_h / 2.0 - r))
+    }
+
+    // Top-left fillet
+    for p in step::arc(2.0 * r, 0.5 * math::PI, math::PI, n) {
+        outer.push((p.0 - body_w / 2.0 + r, p.1 + body_h / 2.0 - r))
+    }
+
+    // Bottom-left of body (sharp)
+    outer.push((-body_w / 2.0, -body_h / 2.0))
+
+    // Bottom-left of cutout
+    outer.push((-pw / 2.0, -body_h / 2.0))
+
+    // Inside the cutout
+    outer.push((-pw / 2.0, -body_h / 2.0 + ph))
+    outer.push((pw / 2.0, -body_h / 2.0 + ph))
+
+    // Back to start (pw/2, -body_h/2) - implied
+
+    // 2. Fastener Seat Hole
+    let seat_y = ph - body_h / 2.0 + (body_h - ph) / 2.0
+    let seat_hole = reverse(step::circle(sd))
+    let seat_hole_translated = step::translate_pts(seat_hole, 0.0, seat_y)
+
+    // 3. Create the main solid
+    let endcap = step::extrude(step::profile(outer).add_hole(seat_hole_translated), thick)
+        .named("rail-endcap")
+        .colored(step::rgb(0.1, 0.7, 0.4)) // Beautiful Emerald Green
+        .moved(tx, ty, tz)
+
+    // 4. Labels
+
+    let font = step::load_font("baloo")?
+    let hole_top = seat_y + sd / 2.0
+    let edge_top = body_h / 2.0
+    let label_y = (hole_top + edge_top) / 2.0
+    let rail_label = rw as i64
+    let design = step::design(name: "linear-rail-endcap", documentation: args.documentation())
+        .add(endcap)
+        .add_text_on_face(endcap, f"MGN{rail_label}", Top, font, font_size: Some(2.2), offset_y: label_y)
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(_) => design.write_blender_python(bpy_path)?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}

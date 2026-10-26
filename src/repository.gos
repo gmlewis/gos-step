@@ -1,0 +1,947 @@
+//! The entity repository and the `AnyEntity` sum type.
+//!
+//! Entities keep their incoming IDs and insertion order so a
+//! parse → serialize → parse cycle is idempotent.
+
+use crate::entity::Entity
+
+pub enum AnyEntity {
+    RawEntity(crate::raw_entity::RawEntity)
+    CartesianPoint(crate::entities::geometry::CartesianPoint)
+    Direction(crate::entities::geometry::Direction)
+    Axis1Placement(crate::entities::geometry::Axis1Placement)
+    Axis2Placement2D(crate::entities::geometry::Axis2Placement2D)
+    Axis2Placement3D(crate::entities::geometry::Axis2Placement3D)
+    Plane(crate::entities::geometry::Plane)
+    Vector(crate::entities::geometry::Vector)
+    Line(crate::entities::geometry::Line)
+    Circle(crate::entities::geometry::Circle)
+    Ellipse(crate::entities::geometry::Ellipse)
+    Parabola(crate::entities::geometry::Parabola)
+    Hyperbola(crate::entities::geometry::Hyperbola)
+    CylindricalSurface(crate::entities::geometry::CylindricalSurface)
+    ConicalSurface(crate::entities::geometry::ConicalSurface)
+    ToroidalSurface(crate::entities::geometry::ToroidalSurface)
+    BSplineCurve(crate::entities::geometry::BSplineCurve)
+    BSplineCurveWithKnots(crate::entities::geometry::BSplineCurveWithKnots)
+    CompositeCurve(crate::entities::geometry::CompositeCurve)
+    CompositeCurveSegment(crate::entities::geometry::CompositeCurveSegment)
+    BSplineSurface(crate::entities::geometry::BSplineSurface)
+    BSplineSurfaceWithKnots(crate::entities::geometry::BSplineSurfaceWithKnots)
+    RationalBSplineCurve(crate::entities::geometry::RationalBSplineCurve)
+    RationalBSplineSurface(crate::entities::geometry::RationalBSplineSurface)
+    TrimmedCurve(crate::entities::geometry::TrimmedCurve)
+    OffsetCurve3D(crate::entities::geometry::OffsetCurve3D)
+    OffsetSurface(crate::entities::geometry::OffsetSurface)
+    SurfaceOfLinearExtrusion(crate::entities::geometry::SurfaceOfLinearExtrusion)
+    SurfaceOfRevolution(crate::entities::geometry::SurfaceOfRevolution)
+    SweptSurface(crate::entities::geometry::SweptSurface)
+    RectangularTrimmedSurface(crate::entities::geometry::RectangularTrimmedSurface)
+    Polyline(crate::entities::geometry::Polyline)
+    BooleanResult(crate::entities::geometry::BooleanResult)
+    CsgSolid(crate::entities::geometry::CsgSolid)
+    Block(crate::entities::geometry::Block)
+    Sphere(crate::entities::geometry::Sphere)
+    RightCircularCylinder(crate::entities::geometry::RightCircularCylinder)
+    RightCircularCone(crate::entities::geometry::RightCircularCone)
+    Torus(crate::entities::geometry::Torus)
+    RectangularPyramid(crate::entities::geometry::RectangularPyramid)
+    RightAngularWedge(crate::entities::geometry::RightAngularWedge)
+    HalfSpaceSolid(crate::entities::geometry::HalfSpaceSolid)
+    RepresentationRelationship(crate::entities::product::RepresentationRelationship)
+    RepresentationRelationshipWithTransformation(
+        crate::entities::product::RepresentationRelationshipWithTransformation
+    )
+    ShapeRepresentationRelationship(crate::entities::product::ShapeRepresentationRelationship)
+    AdvancedBrepShapeRepresentation(crate::entities::product::AdvancedBrepShapeRepresentation)
+    CsgShapeRepresentation(crate::entities::product::CsgShapeRepresentation)
+    ShapeRepresentation(crate::entities::product::ShapeRepresentation)
+    Representation(crate::entities::product::Representation)
+    ShapeDefinitionRepresentation(crate::entities::product::ShapeDefinitionRepresentation)
+    DescriptiveRepresentationItem(crate::entities::product::DescriptiveRepresentationItem)
+    MeasureRepresentationItem(crate::entities::product::MeasureRepresentationItem)
+    ContextDependentShapeRepresentation(
+        crate::entities::product::ContextDependentShapeRepresentation
+    )
+    ItemDefinedTransformation(crate::entities::product::ItemDefinedTransformation)
+    NextAssemblyUsageOccurrence(crate::entities::product::NextAssemblyUsageOccurrence)
+    ProductDefinitionShape(crate::entities::product::ProductDefinitionShape)
+    ProductDefinition(crate::entities::product::ProductDefinition)
+    ProductDefinitionContext(crate::entities::product::ProductDefinitionContext)
+    ProductDefinitionFormation(crate::entities::product::ProductDefinitionFormation)
+    ProductDefinitionFormationWithSpecifiedSource(
+        crate::entities::product::ProductDefinitionFormationWithSpecifiedSource
+    )
+    PropertyDefinition(crate::entities::product::PropertyDefinition)
+    PropertyDefinitionRepresentation(crate::entities::product::PropertyDefinitionRepresentation)
+    ProductRelatedProductCategory(crate::entities::product::ProductRelatedProductCategory)
+    Product(crate::entities::product::Product)
+    ProductContext(crate::entities::product::ProductContext)
+    ApplicationProtocolDefinition(crate::entities::product::ApplicationProtocolDefinition)
+    ApplicationContext(crate::entities::product::ApplicationContext)
+    Approval(crate::entities::product::Approval)
+    ApprovalStatus(crate::entities::product::ApprovalStatus)
+    ApprovalRole(crate::entities::product::ApprovalRole)
+    ApprovalPersonOrganization(crate::entities::product::ApprovalPersonOrganization)
+    Person(crate::entities::product::Person)
+    Organization(crate::entities::product::Organization)
+    PersonAndOrganization(crate::entities::product::PersonAndOrganization)
+    DateAndTime(crate::entities::product::DateAndTime)
+    LocalTime(crate::entities::product::LocalTime)
+    CalendarDate(crate::entities::product::CalendarDate)
+    CoordinatedUniversalTimeOffset(crate::entities::product::CoordinatedUniversalTimeOffset)
+    SecurityClassification(crate::entities::product::SecurityClassification)
+    SecurityClassificationLevel(crate::entities::product::SecurityClassificationLevel)
+    Certification(crate::entities::product::Certification)
+    CertificationType(crate::entities::product::CertificationType)
+    Document(crate::entities::product::Document)
+    DocumentType(crate::entities::product::DocumentType)
+    DocumentReference(crate::entities::product::DocumentReference)
+    KinematicLink(crate::entities::kinematics::KinematicLink)
+    KinematicJoint(crate::entities::kinematics::KinematicJoint)
+    KinematicPair(crate::entities::kinematics::KinematicPair)
+    GeometricTolerance(crate::entities::tolerancing::GeometricTolerance)
+    Datum(crate::entities::tolerancing::Datum)
+    DatumFeature(crate::entities::tolerancing::DatumFeature)
+    DimensionalSize(crate::entities::tolerancing::DimensionalSize)
+    ManifoldSolidBrep(crate::entities::topology::ManifoldSolidBrep)
+    BrepWithVoids(crate::entities::topology::BrepWithVoids)
+    ClosedShell(crate::entities::topology::ClosedShell)
+    OpenShell(crate::entities::topology::OpenShell)
+    ConnectedFaceSet(crate::entities::topology::ConnectedFaceSet)
+    ShellBasedSurfaceModel(crate::entities::topology::ShellBasedSurfaceModel)
+    AdvancedFace(crate::entities::topology::AdvancedFace)
+    FaceSurface(crate::entities::topology::FaceSurface)
+    Subface(crate::entities::topology::Subface)
+    ShapeAspect(crate::entities::product::ShapeAspect)
+    FaceOuterBound(crate::entities::topology::FaceOuterBound)
+    FaceBound(crate::entities::topology::FaceBound)
+    EdgeLoop(crate::entities::topology::EdgeLoop)
+    OrientedEdge(crate::entities::topology::OrientedEdge)
+    EdgeCurve(crate::entities::topology::EdgeCurve)
+    VertexPoint(crate::entities::topology::VertexPoint)
+    ColorRgb(crate::entities::presentation::ColorRgb)
+    DraughtingPreDefinedColour(crate::entities::presentation::DraughtingPreDefinedColour)
+    FillAreaStyleColor(crate::entities::presentation::FillAreaStyleColor)
+    FillAreaStyle(crate::entities::presentation::FillAreaStyle)
+    SurfaceStyleFillArea(crate::entities::presentation::SurfaceStyleFillArea)
+    SurfaceSideStyle(crate::entities::presentation::SurfaceSideStyle)
+    SurfaceStyleUsage(crate::entities::presentation::SurfaceStyleUsage)
+    PresentationStyleAssignment(crate::entities::presentation::PresentationStyleAssignment)
+    PresentationLayerAssignment(crate::entities::presentation::PresentationLayerAssignment)
+    MechanicalDesignGeometricPresentationRepresentation(
+        crate::entities::presentation::MechanicalDesignGeometricPresentationRepresentation
+    )
+    StyledItem(crate::entities::presentation::StyledItem)
+    OverRidingStyledItem(crate::entities::presentation::OverRidingStyledItem)
+    HiddenElementOverRidingStyledItem(
+        crate::entities::presentation::HiddenElementOverRidingStyledItem
+    )
+    AnnotationOccurrence(crate::entities::presentation::AnnotationOccurrence)
+    TextLiteral(crate::entities::presentation::TextLiteral)
+    DimensionalExponents(crate::entities::units::DimensionalExponents)
+    UncertaintyMeasureWithUnit(crate::entities::units::UncertaintyMeasureWithUnit)
+    PlaneAngleMeasureWithUnit(crate::entities::units::PlaneAngleMeasureWithUnit)
+    MeasureWithUnit(crate::entities::units::MeasureWithUnit)
+    DerivedUnitElement(crate::entities::units::DerivedUnitElement)
+    DerivedUnit(crate::entities::units::DerivedUnit)
+    CtxWrap(crate::entities::context::CtxWrap)
+    ComplexInstance(crate::entities::context::ComplexInstance)
+}
+
+pub fn any_entity_raw_entity(e: crate::raw_entity::RawEntity) -> AnyEntity {
+    AnyEntity::RawEntity(e)
+}
+
+pub fn any_entity_cartesian_point(p: crate::entities::geometry::CartesianPoint) -> AnyEntity {
+    AnyEntity::CartesianPoint(p)
+}
+
+pub fn any_entity_direction(d: crate::entities::geometry::Direction) -> AnyEntity {
+    AnyEntity::Direction(d)
+}
+
+pub fn any_entity_axis1_placement(a: crate::entities::geometry::Axis1Placement) -> AnyEntity {
+    AnyEntity::Axis1Placement(a)
+}
+
+pub fn any_entity_axis2_placement_2d(a: crate::entities::geometry::Axis2Placement2D,) -> AnyEntity {
+    AnyEntity::Axis2Placement2D(a)
+}
+
+pub fn any_entity_axis2_placement_3d(a: crate::entities::geometry::Axis2Placement3D,) -> AnyEntity {
+    AnyEntity::Axis2Placement3D(a)
+}
+
+pub fn any_entity_plane(p: crate::entities::geometry::Plane) -> AnyEntity {
+    AnyEntity::Plane(p)
+}
+
+pub fn any_entity_vector(v: crate::entities::geometry::Vector) -> AnyEntity {
+    AnyEntity::Vector(v)
+}
+
+pub fn any_entity_line(l: crate::entities::geometry::Line) -> AnyEntity {
+    AnyEntity::Line(l)
+}
+
+pub fn any_entity_circle(c: crate::entities::geometry::Circle) -> AnyEntity {
+    AnyEntity::Circle(c)
+}
+
+pub fn any_entity_ellipse(e: crate::entities::geometry::Ellipse) -> AnyEntity {
+    AnyEntity::Ellipse(e)
+}
+
+pub fn any_entity_parabola(p: crate::entities::geometry::Parabola) -> AnyEntity {
+    AnyEntity::Parabola(p)
+}
+
+pub fn any_entity_hyperbola(h: crate::entities::geometry::Hyperbola) -> AnyEntity {
+    AnyEntity::Hyperbola(h)
+}
+
+pub fn any_entity_cylindrical_surface(s: crate::entities::geometry::CylindricalSurface,) -> AnyEntity {
+    AnyEntity::CylindricalSurface(s)
+}
+
+pub fn any_entity_conical_surface(s: crate::entities::geometry::ConicalSurface) -> AnyEntity {
+    AnyEntity::ConicalSurface(s)
+}
+
+pub fn any_entity_toroidal_surface(s: crate::entities::geometry::ToroidalSurface) -> AnyEntity {
+    AnyEntity::ToroidalSurface(s)
+}
+
+pub fn any_entity_b_spline_curve(c: crate::entities::geometry::BSplineCurve) -> AnyEntity {
+    AnyEntity::BSplineCurve(c)
+}
+
+pub fn any_entity_b_spline_curve_with_knots(c: crate::entities::geometry::BSplineCurveWithKnots,) -> AnyEntity {
+    AnyEntity::BSplineCurveWithKnots(c)
+}
+
+pub fn any_entity_composite_curve(c: crate::entities::geometry::CompositeCurve) -> AnyEntity {
+    AnyEntity::CompositeCurve(c)
+}
+
+pub fn any_entity_composite_curve_segment(c: crate::entities::geometry::CompositeCurveSegment,) -> AnyEntity {
+    AnyEntity::CompositeCurveSegment(c)
+}
+
+pub fn any_entity_b_spline_surface(s: crate::entities::geometry::BSplineSurface) -> AnyEntity {
+    AnyEntity::BSplineSurface(s)
+}
+
+pub fn any_entity_b_spline_surface_with_knots(s: crate::entities::geometry::BSplineSurfaceWithKnots,) -> AnyEntity {
+    AnyEntity::BSplineSurfaceWithKnots(s)
+}
+
+pub fn any_entity_rational_b_spline_curve(c: crate::entities::geometry::RationalBSplineCurve,) -> AnyEntity {
+    AnyEntity::RationalBSplineCurve(c)
+}
+
+pub fn any_entity_rational_b_spline_surface(s: crate::entities::geometry::RationalBSplineSurface,) -> AnyEntity {
+    AnyEntity::RationalBSplineSurface(s)
+}
+
+pub fn any_entity_trimmed_curve(c: crate::entities::geometry::TrimmedCurve) -> AnyEntity {
+    AnyEntity::TrimmedCurve(c)
+}
+
+pub fn any_entity_offset_curve_3d(c: crate::entities::geometry::OffsetCurve3D) -> AnyEntity {
+    AnyEntity::OffsetCurve3D(c)
+}
+
+pub fn any_entity_offset_surface(s: crate::entities::geometry::OffsetSurface) -> AnyEntity {
+    AnyEntity::OffsetSurface(s)
+}
+
+pub fn any_entity_surface_of_linear_extrusion(s: crate::entities::geometry::SurfaceOfLinearExtrusion,) -> AnyEntity {
+    AnyEntity::SurfaceOfLinearExtrusion(s)
+}
+
+pub fn any_entity_surface_of_revolution(s: crate::entities::geometry::SurfaceOfRevolution,) -> AnyEntity {
+    AnyEntity::SurfaceOfRevolution(s)
+}
+
+pub fn any_entity_swept_surface(s: crate::entities::geometry::SweptSurface) -> AnyEntity {
+    AnyEntity::SweptSurface(s)
+}
+
+pub fn any_entity_rectangular_trimmed_surface(s: crate::entities::geometry::RectangularTrimmedSurface,) -> AnyEntity {
+    AnyEntity::RectangularTrimmedSurface(s)
+}
+
+pub fn any_entity_polyline(p: crate::entities::geometry::Polyline) -> AnyEntity {
+    AnyEntity::Polyline(p)
+}
+
+pub fn any_entity_boolean_result(b: crate::entities::geometry::BooleanResult) -> AnyEntity {
+    AnyEntity::BooleanResult(b)
+}
+
+pub fn any_entity_csg_solid(c: crate::entities::geometry::CsgSolid) -> AnyEntity {
+    AnyEntity::CsgSolid(c)
+}
+
+pub fn any_entity_block(b: crate::entities::geometry::Block) -> AnyEntity {
+    AnyEntity::Block(b)
+}
+
+pub fn any_entity_sphere(s: crate::entities::geometry::Sphere) -> AnyEntity {
+    AnyEntity::Sphere(s)
+}
+
+pub fn any_entity_right_circular_cylinder(c: crate::entities::geometry::RightCircularCylinder,) -> AnyEntity {
+    AnyEntity::RightCircularCylinder(c)
+}
+
+pub fn any_entity_right_circular_cone(c: crate::entities::geometry::RightCircularCone,) -> AnyEntity {
+    AnyEntity::RightCircularCone(c)
+}
+
+pub fn any_entity_torus(t: crate::entities::geometry::Torus) -> AnyEntity {
+    AnyEntity::Torus(t)
+}
+
+pub fn any_entity_rectangular_pyramid(p: crate::entities::geometry::RectangularPyramid,) -> AnyEntity {
+    AnyEntity::RectangularPyramid(p)
+}
+
+pub fn any_entity_right_angular_wedge(w: crate::entities::geometry::RightAngularWedge,) -> AnyEntity {
+    AnyEntity::RightAngularWedge(w)
+}
+
+pub fn any_entity_half_space_solid(h: crate::entities::geometry::HalfSpaceSolid) -> AnyEntity {
+    AnyEntity::HalfSpaceSolid(h)
+}
+
+pub fn any_entity_representation_relationship(r: crate::entities::product::RepresentationRelationship,) -> AnyEntity {
+    AnyEntity::RepresentationRelationship(r)
+}
+
+pub fn any_entity_representation_relationship_with_transformation(r: crate::entities::product::RepresentationRelationshipWithTransformation,) -> AnyEntity {
+    AnyEntity::RepresentationRelationshipWithTransformation(r)
+}
+
+pub fn any_entity_shape_representation_relationship(r: crate::entities::product::ShapeRepresentationRelationship,) -> AnyEntity {
+    AnyEntity::ShapeRepresentationRelationship(r)
+}
+
+pub fn any_entity_advanced_brep_shape_representation(r: crate::entities::product::AdvancedBrepShapeRepresentation,) -> AnyEntity {
+    AnyEntity::AdvancedBrepShapeRepresentation(r)
+}
+
+pub fn any_entity_csg_shape_representation(r: crate::entities::product::CsgShapeRepresentation,) -> AnyEntity {
+    AnyEntity::CsgShapeRepresentation(r)
+}
+
+pub fn any_entity_shape_representation(r: crate::entities::product::ShapeRepresentation,) -> AnyEntity {
+    AnyEntity::ShapeRepresentation(r)
+}
+
+pub fn any_entity_representation(r: crate::entities::product::Representation) -> AnyEntity {
+    AnyEntity::Representation(r)
+}
+
+pub fn any_entity_shape_definition_representation(r: crate::entities::product::ShapeDefinitionRepresentation,) -> AnyEntity {
+    AnyEntity::ShapeDefinitionRepresentation(r)
+}
+
+pub fn any_entity_descriptive_representation_item(d: crate::entities::product::DescriptiveRepresentationItem,) -> AnyEntity {
+    AnyEntity::DescriptiveRepresentationItem(d)
+}
+
+pub fn any_entity_measure_representation_item(m: crate::entities::product::MeasureRepresentationItem,) -> AnyEntity {
+    AnyEntity::MeasureRepresentationItem(m)
+}
+
+pub fn any_entity_context_dependent_shape_representation(c: crate::entities::product::ContextDependentShapeRepresentation,) -> AnyEntity {
+    AnyEntity::ContextDependentShapeRepresentation(c)
+}
+
+pub fn any_entity_item_defined_transformation(t: crate::entities::product::ItemDefinedTransformation,) -> AnyEntity {
+    AnyEntity::ItemDefinedTransformation(t)
+}
+
+pub fn any_entity_next_assembly_usage_occurrence(n: crate::entities::product::NextAssemblyUsageOccurrence,) -> AnyEntity {
+    AnyEntity::NextAssemblyUsageOccurrence(n)
+}
+
+pub fn any_entity_product_definition_shape(p: crate::entities::product::ProductDefinitionShape,) -> AnyEntity {
+    AnyEntity::ProductDefinitionShape(p)
+}
+
+pub fn any_entity_product_definition(p: crate::entities::product::ProductDefinition,) -> AnyEntity {
+    AnyEntity::ProductDefinition(p)
+}
+
+pub fn any_entity_product_definition_context(c: crate::entities::product::ProductDefinitionContext,) -> AnyEntity {
+    AnyEntity::ProductDefinitionContext(c)
+}
+
+pub fn any_entity_product_definition_formation(f: crate::entities::product::ProductDefinitionFormation,) -> AnyEntity {
+    AnyEntity::ProductDefinitionFormation(f)
+}
+
+pub fn any_entity_product_definition_formation_with_specified_source(f: crate::entities::product::ProductDefinitionFormationWithSpecifiedSource,) -> AnyEntity {
+    AnyEntity::ProductDefinitionFormationWithSpecifiedSource(f)
+}
+
+pub fn any_entity_property_definition(p: crate::entities::product::PropertyDefinition,) -> AnyEntity {
+    AnyEntity::PropertyDefinition(p)
+}
+
+pub fn any_entity_property_definition_representation(p: crate::entities::product::PropertyDefinitionRepresentation,) -> AnyEntity {
+    AnyEntity::PropertyDefinitionRepresentation(p)
+}
+
+pub fn any_entity_product_related_product_category(c: crate::entities::product::ProductRelatedProductCategory,) -> AnyEntity {
+    AnyEntity::ProductRelatedProductCategory(c)
+}
+
+pub fn any_entity_product(p: crate::entities::product::Product) -> AnyEntity {
+    AnyEntity::Product(p)
+}
+
+pub fn any_entity_product_context(c: crate::entities::product::ProductContext) -> AnyEntity {
+    AnyEntity::ProductContext(c)
+}
+
+pub fn any_entity_application_protocol_definition(a: crate::entities::product::ApplicationProtocolDefinition,) -> AnyEntity {
+    AnyEntity::ApplicationProtocolDefinition(a)
+}
+
+pub fn any_entity_application_context(a: crate::entities::product::ApplicationContext,) -> AnyEntity {
+    AnyEntity::ApplicationContext(a)
+}
+
+pub fn any_entity_approval(a: crate::entities::product::Approval) -> AnyEntity {
+    AnyEntity::Approval(a)
+}
+
+pub fn any_entity_approval_status(a: crate::entities::product::ApprovalStatus) -> AnyEntity {
+    AnyEntity::ApprovalStatus(a)
+}
+
+pub fn any_entity_approval_role(a: crate::entities::product::ApprovalRole) -> AnyEntity {
+    AnyEntity::ApprovalRole(a)
+}
+
+pub fn any_entity_approval_person_organization(a: crate::entities::product::ApprovalPersonOrganization,) -> AnyEntity {
+    AnyEntity::ApprovalPersonOrganization(a)
+}
+
+pub fn any_entity_person(p: crate::entities::product::Person) -> AnyEntity {
+    AnyEntity::Person(p)
+}
+
+pub fn any_entity_organization(o: crate::entities::product::Organization) -> AnyEntity {
+    AnyEntity::Organization(o)
+}
+
+pub fn any_entity_person_and_organization(p: crate::entities::product::PersonAndOrganization,) -> AnyEntity {
+    AnyEntity::PersonAndOrganization(p)
+}
+
+pub fn any_entity_date_and_time(d: crate::entities::product::DateAndTime) -> AnyEntity {
+    AnyEntity::DateAndTime(d)
+}
+
+pub fn any_entity_local_time(l: crate::entities::product::LocalTime) -> AnyEntity {
+    AnyEntity::LocalTime(l)
+}
+
+pub fn any_entity_calendar_date(c: crate::entities::product::CalendarDate) -> AnyEntity {
+    AnyEntity::CalendarDate(c)
+}
+
+pub fn any_entity_coordinated_universal_time_offset(c: crate::entities::product::CoordinatedUniversalTimeOffset,) -> AnyEntity {
+    AnyEntity::CoordinatedUniversalTimeOffset(c)
+}
+
+pub fn any_entity_security_classification(s: crate::entities::product::SecurityClassification,) -> AnyEntity {
+    AnyEntity::SecurityClassification(s)
+}
+
+pub fn any_entity_security_classification_level(s: crate::entities::product::SecurityClassificationLevel,) -> AnyEntity {
+    AnyEntity::SecurityClassificationLevel(s)
+}
+
+pub fn any_entity_certification(c: crate::entities::product::Certification) -> AnyEntity {
+    AnyEntity::Certification(c)
+}
+
+pub fn any_entity_certification_type(c: crate::entities::product::CertificationType,) -> AnyEntity {
+    AnyEntity::CertificationType(c)
+}
+
+pub fn any_entity_document(d: crate::entities::product::Document) -> AnyEntity {
+    AnyEntity::Document(d)
+}
+
+pub fn any_entity_document_type(d: crate::entities::product::DocumentType) -> AnyEntity {
+    AnyEntity::DocumentType(d)
+}
+
+pub fn any_entity_document_reference(d: crate::entities::product::DocumentReference,) -> AnyEntity {
+    AnyEntity::DocumentReference(d)
+}
+
+pub fn any_entity_kinematic_link(k: crate::entities::kinematics::KinematicLink) -> AnyEntity {
+    AnyEntity::KinematicLink(k)
+}
+
+pub fn any_entity_kinematic_joint(k: crate::entities::kinematics::KinematicJoint) -> AnyEntity {
+    AnyEntity::KinematicJoint(k)
+}
+
+pub fn any_entity_kinematic_pair(k: crate::entities::kinematics::KinematicPair) -> AnyEntity {
+    AnyEntity::KinematicPair(k)
+}
+
+pub fn any_entity_geometric_tolerance(g: crate::entities::tolerancing::GeometricTolerance,) -> AnyEntity {
+    AnyEntity::GeometricTolerance(g)
+}
+
+pub fn any_entity_datum(d: crate::entities::tolerancing::Datum) -> AnyEntity {
+    AnyEntity::Datum(d)
+}
+
+pub fn any_entity_datum_feature(d: crate::entities::tolerancing::DatumFeature) -> AnyEntity {
+    AnyEntity::DatumFeature(d)
+}
+
+pub fn any_entity_dimensional_size(d: crate::entities::tolerancing::DimensionalSize,) -> AnyEntity {
+    AnyEntity::DimensionalSize(d)
+}
+
+pub fn any_entity_manifold_solid_brep(m: crate::entities::topology::ManifoldSolidBrep,) -> AnyEntity {
+    AnyEntity::ManifoldSolidBrep(m)
+}
+
+pub fn any_entity_brep_with_voids(b: crate::entities::topology::BrepWithVoids) -> AnyEntity {
+    AnyEntity::BrepWithVoids(b)
+}
+
+pub fn any_entity_closed_shell(c: crate::entities::topology::ClosedShell) -> AnyEntity {
+    AnyEntity::ClosedShell(c)
+}
+
+pub fn any_entity_open_shell(o: crate::entities::topology::OpenShell) -> AnyEntity {
+    AnyEntity::OpenShell(o)
+}
+
+pub fn any_entity_connected_face_set(c: crate::entities::topology::ConnectedFaceSet,) -> AnyEntity {
+    AnyEntity::ConnectedFaceSet(c)
+}
+
+pub fn any_entity_shell_based_surface_model(s: crate::entities::topology::ShellBasedSurfaceModel,) -> AnyEntity {
+    AnyEntity::ShellBasedSurfaceModel(s)
+}
+
+pub fn any_entity_advanced_face(a: crate::entities::topology::AdvancedFace) -> AnyEntity {
+    AnyEntity::AdvancedFace(a)
+}
+
+pub fn any_entity_face_surface(f: crate::entities::topology::FaceSurface) -> AnyEntity {
+    AnyEntity::FaceSurface(f)
+}
+
+pub fn any_entity_subface(f: crate::entities::topology::Subface) -> AnyEntity {
+    AnyEntity::Subface(f)
+}
+
+pub fn any_entity_shape_aspect(s: crate::entities::product::ShapeAspect) -> AnyEntity {
+    AnyEntity::ShapeAspect(s)
+}
+
+pub fn any_entity_face_outer_bound(b: crate::entities::topology::FaceOuterBound) -> AnyEntity {
+    AnyEntity::FaceOuterBound(b)
+}
+
+pub fn any_entity_face_bound(b: crate::entities::topology::FaceBound) -> AnyEntity {
+    AnyEntity::FaceBound(b)
+}
+
+pub fn any_entity_edge_loop(e: crate::entities::topology::EdgeLoop) -> AnyEntity {
+    AnyEntity::EdgeLoop(e)
+}
+
+pub fn any_entity_oriented_edge(e: crate::entities::topology::OrientedEdge) -> AnyEntity {
+    AnyEntity::OrientedEdge(e)
+}
+
+pub fn any_entity_edge_curve(e: crate::entities::topology::EdgeCurve) -> AnyEntity {
+    AnyEntity::EdgeCurve(e)
+}
+
+pub fn any_entity_vertex_point(e: crate::entities::topology::VertexPoint) -> AnyEntity {
+    AnyEntity::VertexPoint(e)
+}
+
+pub fn any_entity_color_rgb(c: crate::entities::presentation::ColorRgb) -> AnyEntity {
+    AnyEntity::ColorRgb(c)
+}
+
+pub fn any_entity_draughting_pre_defined_color(c: crate::entities::presentation::DraughtingPreDefinedColour,) -> AnyEntity {
+    AnyEntity::DraughtingPreDefinedColour(c)
+}
+
+pub fn any_entity_fill_area_style_color(c: crate::entities::presentation::FillAreaStyleColor,) -> AnyEntity {
+    AnyEntity::FillAreaStyleColor(c)
+}
+
+pub fn any_entity_fill_area_style(s: crate::entities::presentation::FillAreaStyle) -> AnyEntity {
+    AnyEntity::FillAreaStyle(s)
+}
+
+pub fn any_entity_surface_style_fill_area(s: crate::entities::presentation::SurfaceStyleFillArea,) -> AnyEntity {
+    AnyEntity::SurfaceStyleFillArea(s)
+}
+
+pub fn any_entity_surface_side_style(s: crate::entities::presentation::SurfaceSideStyle,) -> AnyEntity {
+    AnyEntity::SurfaceSideStyle(s)
+}
+
+pub fn any_entity_surface_style_usage(s: crate::entities::presentation::SurfaceStyleUsage,) -> AnyEntity {
+    AnyEntity::SurfaceStyleUsage(s)
+}
+
+pub fn any_entity_presentation_style_assignment(p: crate::entities::presentation::PresentationStyleAssignment,) -> AnyEntity {
+    AnyEntity::PresentationStyleAssignment(p)
+}
+
+pub fn any_entity_presentation_layer_assignment(p: crate::entities::presentation::PresentationLayerAssignment,) -> AnyEntity {
+    AnyEntity::PresentationLayerAssignment(p)
+}
+
+pub fn any_entity_mechanical_design_geometric_presentation_representation(r: crate::entities::presentation::MechanicalDesignGeometricPresentationRepresentation,) -> AnyEntity {
+    AnyEntity::MechanicalDesignGeometricPresentationRepresentation(r)
+}
+
+pub fn any_entity_styled_item(s: crate::entities::presentation::StyledItem) -> AnyEntity {
+    AnyEntity::StyledItem(s)
+}
+
+pub fn any_entity_over_riding_styled_item(s: crate::entities::presentation::OverRidingStyledItem,) -> AnyEntity {
+    AnyEntity::OverRidingStyledItem(s)
+}
+
+pub fn any_entity_hidden_element_over_riding_styled_item(s: crate::entities::presentation::HiddenElementOverRidingStyledItem,) -> AnyEntity {
+    AnyEntity::HiddenElementOverRidingStyledItem(s)
+}
+
+pub fn any_entity_annotation_occurrence(a: crate::entities::presentation::AnnotationOccurrence,) -> AnyEntity {
+    AnyEntity::AnnotationOccurrence(a)
+}
+
+pub fn any_entity_text_literal(t: crate::entities::presentation::TextLiteral) -> AnyEntity {
+    AnyEntity::TextLiteral(t)
+}
+
+pub fn any_entity_dimensional_exponents(d: crate::entities::units::DimensionalExponents,) -> AnyEntity {
+    AnyEntity::DimensionalExponents(d)
+}
+
+pub fn any_entity_uncertainty_measure_with_unit(u: crate::entities::units::UncertaintyMeasureWithUnit,) -> AnyEntity {
+    AnyEntity::UncertaintyMeasureWithUnit(u)
+}
+
+pub fn any_entity_plane_angle_measure_with_unit(p: crate::entities::units::PlaneAngleMeasureWithUnit,) -> AnyEntity {
+    AnyEntity::PlaneAngleMeasureWithUnit(p)
+}
+
+pub fn any_entity_measure_with_unit(m: crate::entities::units::MeasureWithUnit) -> AnyEntity {
+    AnyEntity::MeasureWithUnit(m)
+}
+
+pub fn any_entity_derived_unit_element(d: crate::entities::units::DerivedUnitElement,) -> AnyEntity {
+    AnyEntity::DerivedUnitElement(d)
+}
+
+pub fn any_entity_derived_unit(d: crate::entities::units::DerivedUnit) -> AnyEntity {
+    AnyEntity::DerivedUnit(d)
+}
+
+pub fn any_entity_ctx_wrap(c: crate::entities::context::CtxWrap) -> AnyEntity {
+    AnyEntity::CtxWrap(c)
+}
+
+pub fn any_entity_complex_instance(c: crate::entities::context::ComplexInstance) -> AnyEntity {
+    AnyEntity::ComplexInstance(c)
+}
+
+struct Entry {
+    id: crate::ids::EntityId
+    entity: AnyEntity
+}
+
+pub struct Repository {
+    pub entities: Vec<Entry>
+    pub order: Vec<crate::ids::EntityId>
+    pub header: crate::header::HeaderSection
+    pub next_id: i64
+}
+
+impl Repository {
+    pub fn new() -> Repository {
+        Repository { entities: #[], order: #[], header: crate::header::HeaderSection::empty(), next_id: 1 }
+    }
+}
+
+impl Repository {
+    pub fn get_header(self) -> crate::header::HeaderSection {
+        self.header
+    }
+}
+
+impl Repository {
+    pub fn set_header(self, header: crate::header::HeaderSection,) -> Repository {
+        let mut repo = self
+        repo.header = header
+        repo
+    }
+}
+
+impl Repository {
+    pub fn len(self) -> i64 {
+        self.order.len()
+    }
+}
+
+impl Repository {
+    pub fn get(self, id: crate::ids::EntityId) -> Option<AnyEntity> {
+        for entry in self.entities {
+            if entry.id.value == id.value {
+                return Some(entry.entity)
+            }
+        }
+        None
+    }
+}
+
+impl Repository {
+    pub fn add(self, entity: AnyEntity,) -> (Repository, crate::ids::EntityId) {
+        let mut repo = self
+        let id = crate::ids::EntityId { value: repo.next_id }
+        repo.next_id = repo.next_id + 1
+        repo.entities.push(Entry { id: id, entity: entity })
+        repo.order.push(id)
+        (repo, id)
+    }
+}
+
+impl Repository {
+    pub fn insert_with_id(self, id: crate::ids::EntityId, entity: AnyEntity,) -> Repository {
+        let mut repo = self
+        repo.entities.push(Entry { id: id, entity: entity })
+        repo.order.push(id)
+        if id.value >= repo.next_id {
+            repo.next_id = id.value + 1
+        }
+        repo
+    }
+}
+
+impl Entity for AnyEntity {
+    fn to_step(self) -> String {
+        entity_to_step(self)
+    }
+}
+
+pub fn entity_to_step(entity: AnyEntity) -> String {
+    match entity {
+        AnyEntity::RawEntity(e) => e.to_step()
+        AnyEntity::CartesianPoint(p) => p.to_step()
+        AnyEntity::Direction(d) => d.to_step()
+        AnyEntity::Axis1Placement(a) => a.to_step()
+        AnyEntity::Axis2Placement2D(a) => a.to_step()
+        AnyEntity::Axis2Placement3D(a) => a.to_step()
+        AnyEntity::Plane(p) => p.to_step()
+        AnyEntity::Vector(v) => v.to_step()
+        AnyEntity::Line(l) => l.to_step()
+        AnyEntity::Circle(c) => c.to_step()
+        AnyEntity::Ellipse(e) => e.to_step()
+        AnyEntity::Parabola(p) => p.to_step()
+        AnyEntity::Hyperbola(h) => h.to_step()
+        AnyEntity::CylindricalSurface(s) => s.to_step()
+        AnyEntity::ConicalSurface(s) => s.to_step()
+        AnyEntity::ToroidalSurface(s) => s.to_step()
+        AnyEntity::BSplineCurve(c) => c.to_step()
+        AnyEntity::BSplineCurveWithKnots(c) => c.to_step()
+        AnyEntity::CompositeCurve(c) => c.to_step()
+        AnyEntity::CompositeCurveSegment(c) => c.to_step()
+        AnyEntity::BSplineSurface(s) => s.to_step()
+        AnyEntity::BSplineSurfaceWithKnots(s) => s.to_step()
+        AnyEntity::RationalBSplineCurve(c) => c.to_step()
+        AnyEntity::RationalBSplineSurface(s) => s.to_step()
+        AnyEntity::TrimmedCurve(c) => c.to_step()
+        AnyEntity::OffsetCurve3D(c) => c.to_step()
+        AnyEntity::OffsetSurface(s) => s.to_step()
+        AnyEntity::SurfaceOfLinearExtrusion(s) => s.to_step()
+        AnyEntity::SurfaceOfRevolution(s) => s.to_step()
+        AnyEntity::SweptSurface(s) => s.to_step()
+        AnyEntity::RectangularTrimmedSurface(s) => s.to_step()
+        AnyEntity::Polyline(p) => p.to_step()
+        AnyEntity::BooleanResult(b) => b.to_step()
+        AnyEntity::CsgSolid(c) => c.to_step()
+        AnyEntity::Block(b) => b.to_step()
+        AnyEntity::Sphere(s) => s.to_step()
+        AnyEntity::RightCircularCylinder(c) => c.to_step()
+        AnyEntity::RightCircularCone(c) => c.to_step()
+        AnyEntity::Torus(t) => t.to_step()
+        AnyEntity::RectangularPyramid(p) => p.to_step()
+        AnyEntity::RightAngularWedge(w) => w.to_step()
+        AnyEntity::HalfSpaceSolid(h) => h.to_step()
+        AnyEntity::RepresentationRelationship(r) => r.to_step()
+        AnyEntity::RepresentationRelationshipWithTransformation(r) => r.to_step()
+        AnyEntity::ShapeRepresentationRelationship(r) => r.to_step()
+        AnyEntity::AdvancedBrepShapeRepresentation(r) => r.to_step()
+        AnyEntity::CsgShapeRepresentation(r) => r.to_step()
+        AnyEntity::ShapeRepresentation(r) => r.to_step()
+        AnyEntity::Representation(r) => r.to_step()
+        AnyEntity::ShapeDefinitionRepresentation(r) => r.to_step()
+        AnyEntity::DescriptiveRepresentationItem(d) => d.to_step()
+        AnyEntity::MeasureRepresentationItem(m) => m.to_step()
+        AnyEntity::ContextDependentShapeRepresentation(c) => c.to_step()
+        AnyEntity::ItemDefinedTransformation(t) => t.to_step()
+        AnyEntity::NextAssemblyUsageOccurrence(n) => n.to_step()
+        AnyEntity::ProductDefinitionShape(p) => p.to_step()
+        AnyEntity::ProductDefinition(p) => p.to_step()
+        AnyEntity::ProductDefinitionContext(c) => c.to_step()
+        AnyEntity::ProductDefinitionFormation(f) => f.to_step()
+        AnyEntity::ProductDefinitionFormationWithSpecifiedSource(f) => f.to_step()
+        AnyEntity::PropertyDefinition(p) => p.to_step()
+        AnyEntity::PropertyDefinitionRepresentation(p) => p.to_step()
+        AnyEntity::ProductRelatedProductCategory(c) => c.to_step()
+        AnyEntity::Product(p) => p.to_step()
+        AnyEntity::ProductContext(c) => c.to_step()
+        AnyEntity::ApplicationProtocolDefinition(a) => a.to_step()
+        AnyEntity::ApplicationContext(a) => a.to_step()
+        AnyEntity::Approval(a) => a.to_step()
+        AnyEntity::ApprovalStatus(a) => a.to_step()
+        AnyEntity::ApprovalRole(a) => a.to_step()
+        AnyEntity::ApprovalPersonOrganization(a) => a.to_step()
+        AnyEntity::Person(p) => p.to_step()
+        AnyEntity::Organization(o) => o.to_step()
+        AnyEntity::PersonAndOrganization(p) => p.to_step()
+        AnyEntity::DateAndTime(d) => d.to_step()
+        AnyEntity::LocalTime(l) => l.to_step()
+        AnyEntity::CalendarDate(c) => c.to_step()
+        AnyEntity::CoordinatedUniversalTimeOffset(c) => c.to_step()
+        AnyEntity::SecurityClassification(s) => s.to_step()
+        AnyEntity::SecurityClassificationLevel(s) => s.to_step()
+        AnyEntity::Certification(c) => c.to_step()
+        AnyEntity::CertificationType(c) => c.to_step()
+        AnyEntity::Document(d) => d.to_step()
+        AnyEntity::DocumentType(d) => d.to_step()
+        AnyEntity::DocumentReference(d) => d.to_step()
+        AnyEntity::KinematicLink(k) => k.to_step()
+        AnyEntity::KinematicJoint(k) => k.to_step()
+        AnyEntity::KinematicPair(k) => k.to_step()
+        AnyEntity::GeometricTolerance(g) => g.to_step()
+        AnyEntity::Datum(d) => d.to_step()
+        AnyEntity::DatumFeature(d) => d.to_step()
+        AnyEntity::DimensionalSize(d) => d.to_step()
+        AnyEntity::ManifoldSolidBrep(m) => m.to_step()
+        AnyEntity::BrepWithVoids(b) => b.to_step()
+        AnyEntity::ClosedShell(c) => c.to_step()
+        AnyEntity::OpenShell(o) => o.to_step()
+        AnyEntity::ConnectedFaceSet(c) => c.to_step()
+        AnyEntity::ShellBasedSurfaceModel(s) => s.to_step()
+        AnyEntity::AdvancedFace(a) => a.to_step()
+        AnyEntity::FaceSurface(f) => f.to_step()
+        AnyEntity::Subface(f) => f.to_step()
+        AnyEntity::ShapeAspect(s) => s.to_step()
+        AnyEntity::FaceOuterBound(b) => b.to_step()
+        AnyEntity::FaceBound(b) => b.to_step()
+        AnyEntity::EdgeLoop(e) => e.to_step()
+        AnyEntity::OrientedEdge(e) => e.to_step()
+        AnyEntity::EdgeCurve(e) => e.to_step()
+        AnyEntity::VertexPoint(e) => e.to_step()
+        AnyEntity::ColorRgb(c) => c.to_step()
+        AnyEntity::DraughtingPreDefinedColour(c) => c.to_step()
+        AnyEntity::FillAreaStyleColor(c) => c.to_step()
+        AnyEntity::FillAreaStyle(s) => s.to_step()
+        AnyEntity::SurfaceStyleFillArea(s) => s.to_step()
+        AnyEntity::SurfaceSideStyle(s) => s.to_step()
+        AnyEntity::SurfaceStyleUsage(s) => s.to_step()
+        AnyEntity::PresentationStyleAssignment(p) => p.to_step()
+        AnyEntity::PresentationLayerAssignment(p) => p.to_step()
+        AnyEntity::MechanicalDesignGeometricPresentationRepresentation(r) =>
+            r.to_step()
+        AnyEntity::StyledItem(s) => s.to_step()
+        AnyEntity::OverRidingStyledItem(s) => s.to_step()
+        AnyEntity::HiddenElementOverRidingStyledItem(s) => s.to_step()
+        AnyEntity::AnnotationOccurrence(a) => a.to_step()
+        AnyEntity::TextLiteral(t) => t.to_step()
+        AnyEntity::DimensionalExponents(d) => d.to_step()
+        AnyEntity::UncertaintyMeasureWithUnit(u) => u.to_step()
+        AnyEntity::PlaneAngleMeasureWithUnit(p) => p.to_step()
+        AnyEntity::MeasureWithUnit(m) => m.to_step()
+        AnyEntity::DerivedUnitElement(d) => d.to_step()
+        AnyEntity::DerivedUnit(d) => d.to_step()
+        AnyEntity::CtxWrap(c) => c.to_step()
+        AnyEntity::ComplexInstance(c) => c.to_step()
+    }
+}
+
+// Minimal serializer for now (DATA section only).
+impl Repository {
+    pub fn to_step_data_section(self) -> String {
+        let mut lines: Vec<String> = #[]
+        for entry in self.entities {
+            lines.push(f"#{entry.id.value}={entity_to_step(entry.entity)};")
+        }
+        lines.join("\n")
+    }
+}
+
+// Serialize a full ISO-10303-21 STEP file.
+//
+// - Always emits ISO-10303-21 wrapper lines.
+// - Emits HEADER section using the repository's stored header.
+// - Emits DATA section from the repository entities.
+impl Repository {
+    pub fn to_step_file(self) -> String {
+        let header_section = self.header.to_step_header_section()
+        let data_section = self.to_step_data_section()
+        let out = if data_section.len() == 0 {
+            f"ISO-10303-21;\n{header_section}\nDATA;\nENDSEC;\nEND-ISO-10303-21;"
+        } else {
+            f"ISO-10303-21;\n{header_section}\nDATA;\n{data_section}\nENDSEC;\nEND-ISO-10303-21;"
+        }
+        // Normalize Windows CRLF (or stray CR) so output is stable/idempotent.
+        out.replace("\r", "")
+    }
+}
+
+impl Repository {
+    /// Append an entity in place, answering its new ID.
+    ///
+    /// This is the O(1) path used by the parser and `StepContext`; the
+    /// functional `add` remains for API compatibility.
+    pub fn add_mut(&mut self, entity: AnyEntity) -> EntityId {
+        let id = EntityId { value: self.next_id }
+        self.next_id = self.next_id + 1
+        self.entities.push(Entry { id: id, entity: entity })
+        self.order.push(id)
+        id
+    }
+
+    /// Insert an entity with a caller-supplied ID, in place.
+    pub fn insert_with_id_mut(&mut self, id: EntityId, entity: AnyEntity) -> () {
+        self.entities.push(Entry { id: id, entity: entity })
+        self.order.push(id)
+        if id.value >= self.next_id {
+            self.next_id = id.value + 1
+        }
+    }
+
+    /// Replace the header in place.
+    pub fn set_header_mut(&mut self, header: crate::header::HeaderSection) -> () {
+        self.header = header
+    }
+}

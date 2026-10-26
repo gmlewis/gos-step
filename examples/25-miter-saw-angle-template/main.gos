@@ -1,0 +1,152 @@
+//! 25-miter-saw-angle-template — printable miter saw angle templates.
+//!
+//! Usage: ./run-example.sh 25 --angles 15,22.5,30,45 > templates.step
+
+use std::env
+use std::math
+use std::process
+use std::strconv
+
+use step
+use step::Face::{Top}
+
+fn reverse_pts(pts: Vec<step::V2>) -> Vec<step::V2> {
+    let mut out = #[]
+    let mut i = pts.len() as i64 - 1
+    while i >= 0 {
+        out.push(pts[i])
+        i -= 1
+    }
+    out
+}
+
+fn parse_angles(s: String) -> Vec<f64> {
+    let parts = s.split(",")
+    let mut out = #[]
+    for p in parts {
+        let val = match strconv::parse_f64(p.trim()) {
+            Ok(v) => v
+            Err(_) => 0.0
+        }
+        if val > 0.0 && val < 90.0 {
+            out.push(val)
+        }
+    }
+    if out.len() == 0 {
+        #[15.0, 22.5, 30.0, 45.0]
+    } else {
+        out
+    }
+}
+
+fn miter_templates(
+    angles: Vec<f64>
+    size: f64
+    thickness: f64
+    hole_dia: f64
+    documentation: String
+) -> Result<step::Design, step::Error> {
+    let mut design = step::design(name: "miter-templates", documentation: documentation)
+    let spacing = size + 10.0
+    let font = step::load_font("baloo")?
+    for (i, angle) in angles.enumerate() {
+        let x_off = i as f64 * spacing
+
+        // Wedge profile.
+        let angle_rad = angle * math::PI / 180.0
+        let h_max = size * step::tan(angle_rad)
+        let base_h = 10.0
+        let wedge_poly = #[
+            (0.0, 0.0)
+            (size, 0.0)
+            (size, base_h + h_max)
+            (0.0, base_h)
+        ]
+        let mut profile = step::profile(wedge_poly)
+        if hole_dia > 0.0 {
+            let hx = size * 0.8
+            let hy = base_h * 0.5
+            let hole = reverse_pts(step::translate_pts(step::circle(hole_dia), hx, hy))
+            profile = profile.add_hole(hole)
+        }
+        let wedge = step::extrude(profile, thickness)
+            .named(f"wedge-{angle}")
+            .colored(step::PURPLE)
+            .moved(x_off, 0.0, 0.0)
+        design = design.add(wedge)
+
+        // Label on the large side face.
+        let label_text = f"{angle}°"
+        design = design.add_text_on_face(
+            wedge
+            label_text
+            Top
+            font
+            font_size: Some(base_h * 0.6)
+            offset_x: size * 0.3
+            offset_y: 0.0
+            color: step::WHITE
+        )
+    }
+    Ok(design)
+}
+
+fn run() -> Result<(), step::Error> {
+    let spec = {
+        "angles": step::opt_string(short: 'a', help: "Comma-separated list of angles (degrees). Default: 15,22.5,30,45")
+        "size": step::opt_double(50.0, help: "Length of the wedge edges (mm)", min: Some(10.0))
+        "thickness": step::opt_double(5.0, help: "Thickness of the templates (mm)", min: Some(1.0))
+        "holeDiameter": step::opt_double(5.0, help: "Diameter of the optional hanging hole (mm)", min: Some(0.0))
+        "blend": step::opt_string(help: "Create Blender 5.0 file (instead of STEP)")
+        "bpy": step::opt_string(help: "Write Blender 5.0 Python3 script to a file (instead of STEP)")
+        "out": step::opt_string(short: 'o', help: "Write output to a file (default: stdout)")
+    }
+
+    let args = match step::parse_args(
+        step::with_translate(spec)
+        "25-miter-saw-angle-template"
+        "Generate miter saw angle templates."
+        env::args()
+    ) {
+        Ok(a) => a
+        Err(err) => process::exit(step::cli_report(err) as i64)
+    }
+
+    let angles_str = args.string_opt("angles").unwrap_or("15,22.5,30,45")
+    let size = args.double_or("size", 50.0)
+    let thickness = args.double_or("thickness", 5.0)
+    let hole_dia = args.double_or("holeDiameter", 5.0)
+    let blend_path = args.string_opt("blend")
+    let bpy_path = args.string_opt("bpy")
+    let out_path = args.string_opt("out")
+    let tx, ty, tz = match args.translate_xyz() {
+        Ok(v) => v
+        Err(_) => {
+            eprintln("error: invalid translation")
+            return Ok(())
+        }
+    }
+
+    let angles = parse_angles(angles_str)
+    let design = miter_templates(angles, size, thickness, hole_dia, args.documentation())?
+        .moved(tx, ty, tz)
+
+    match blend_path {
+        Some(path) => design.create_blender_file(path)?
+        None => match bpy_path {
+            Some(path) => design.write_blender_python(Some(path))?
+            None => design.write_step(out_path)?
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln(f"{err}")
+            process::exit(1)
+        }
+    }
+}
