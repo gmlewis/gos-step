@@ -26,7 +26,7 @@ use crate::ids::Ref
 use crate::repository::{Repository, any_entity_advanced_brep_shape_representation, any_entity_closed_shell, any_entity_color_rgb, any_entity_csg_shape_representation, any_entity_fill_area_style, any_entity_fill_area_style_color, any_entity_manifold_solid_brep, any_entity_mechanical_design_geometric_presentation_representation, any_entity_presentation_layer_assignment, any_entity_presentation_style_assignment, any_entity_product_definition_shape, any_entity_shape_definition_representation, any_entity_shape_representation, any_entity_shape_representation_relationship, any_entity_styled_item, any_entity_surface_side_style, any_entity_surface_style_fill_area, any_entity_surface_style_usage}
 
 /// Repository URL included in generated STEP headers.
-pub const STEP_REPO_URL: &str = "https://github.com/gmlewis/gos-step"
+pub const STEP_REPO_URL: String = "https://github.com/gmlewis/gos-step"
 
 /// A model under construction.
 pub struct Design {
